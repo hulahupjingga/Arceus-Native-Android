@@ -385,3 +385,5 @@ This version translates the game's shaders differently: updating them now. Your 
 Setting up	Configuración
 Keep the phone cooler: half the workers (setup takes longer)	Mantener el móvil más fresco: la mitad de procesos (la configuración tarda más)
 While aiming (ZL or ZR held, as when throwing a Poké Ball): turn and tilt the phone to aim	Al apuntar (ZL o ZR pulsado, como al lanzar una Poké Ball): gira e inclina el móvil para apuntar
+Detailed performance log	Registro de rendimiento detallado
+On: the log records where each frame's time goes, for a report about slowdowns or stutter. A little slower: turn it off after. From the next start	Activado: el registro anota en qué se va el tiempo de cada fotograma, para un reporte sobre ralentizaciones o tirones. Un poco más lento: desactívalo después. Desde el próximo inicio
