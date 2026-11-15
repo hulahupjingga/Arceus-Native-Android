@@ -387,4 +387,3 @@ Keep the phone cooler: half the workers (setup takes longer)	端末を熱くし�
 While aiming (ZL or ZR held, as when throwing a Poké Ball): turn and tilt the phone to aim	狙うとき（ZLかZRを押している間。モンスターボールを投げるときなど）：端末を回したり傾けたりして狙います
 Detailed performance log	詳細なパフォーマンスログ
 On: the log records where each frame's time goes, for a report about slowdowns or stutter. A little slower: turn it off after. From the next start	オン：各フレームの時間の使い道をログに記録します。カクつきや遅さの報告用です。少し遅くなるので、終わったらオフにしてください。次回起動から
-This phone's own graphics driver has no Vulkan 1.1, which the game needs: it won't run with it. On some Adreno phones a custom driver (Graphics driver, below) adds it.	この端末の標準グラフィックドライバーには、ゲームに必要なVulkan 1.1がありません。このままでは動きません。一部のAdreno端末では、カスタムドライバー（下の「グラフィックドライバー」）で使えるようになります。
