@@ -591,11 +591,15 @@ static int arc_res(module_t *m, int64_t p0, int64_t p1) {
     static const struct { uint64_t off; uint32_t orig, imm; } R[] = {
         { 0x29f0650, 0x5280f008u, 0xa00 }, { 0x29f0654, 0x52808709u, 0x5a0 }, { 0x29f0410, 0x5280f008u, 0xa00 }, { 0x29f0414, 0x52808709u, 0x5a0 },
         { 0x2b9a5fc, 0x5280f008u, 0xa00 }, { 0x2b9a604, 0x52808708u, 0x5a0 }, { 0x277bd44, 0x5280f009u, 0xa00 }, { 0x277bd50, 0x52808708u, 0x5a0 },
-        { 0x29e99e8, 0xf2c0f008u, 0xa00 }, { 0x29e99f4, 0xf2c08708u, 0x5a0 } };
+        { 0x29e99e8, 0xf2c0f008u, 0xa00 }, { 0x29e99f4, 0xf2c08708u, 0x5a0 },
+        // the render target memory pool, 250 MB (MOV W9, #0xfa00000 in the GPU pool config at +0x277d798: +0x28 300 MB field buffers, +0x30 250 MB render
+        //   targets, +0x38 40 MB command memory; found by LZA-Recomp, MIT, runtime/hle/pla_cmdpool.c), 448 MB for 1440p: 2560x1440 targets take 1.78 times the
+        //   1080p ones, and the 250 MB pool is what ran out (the crash above). Whether the game's heap block carries the extra 198 MB is the phone test's question
+        { 0x277d7f0, 0x52a1f409u, 0x1c00 } };
     for (unsigned i = 0; i < sizeof R / sizeof *R; i++) { uint32_t w; memcpy(&w, m->base + R[i].off, 4);
         if (R[i].off + 4 > m->text_end || w != R[i].orig || overlaps_rewrite(m, R[i].off, 4, p0, p1)) { LOG("[RED] %s: 1440p not applied (Legends: Arceus 1.1.1's render size code differs at +%#llx)", m->name, (unsigned long long)R[i].off); return 0; } }
     for (unsigned i = 0; i < sizeof R / sizeof *R; i++) { uint32_t w = (R[i].orig & ~(0xffffu << 5)) | R[i].imm << 5; memcpy(m->base + R[i].off, &w, 4); }
-    LOG("%s: 1440p: the TV-mode render size is 2560x1440 (DM_ARC_RES)", m->name);
+    LOG("%s: 1440p: the TV-mode render size is 2560x1440, the render target memory pool 448 MB (DM_ARC_RES)", m->name);
     return (int)(sizeof R / sizeof *R);
 }
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
