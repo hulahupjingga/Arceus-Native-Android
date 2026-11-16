@@ -2448,6 +2448,14 @@ static vshader *shader_load(const uint8_t key[8], int st) {
             if (st == 0) { free(glcode); glcode = NULL; snprintf(p, sizeof p, "%s/%s.gl.spv", g_live_dir, hex); glcode = file_read(p, &ngl); }
         }
     }
+    // Our own shaders in place of the game's (shader_override/<hash>.spv in the game's files folder, next to the pipeline cache): a cheaper version of a costly effect,
+    //   chosen with the pass times (DM_VK_PASS_TIMES). Only the SPIR-V is replaced: the game's reflection (bindings, inputs, outputs) is kept, so a replacement keeps the
+    //   original's interface. DM_VK_NO_OVERRIDE=1 leaves every shader as the game made it
+    if (code && !getenv("DM_VK_NO_OVERRIDE")) { const char *pc = getenv("DM_VK_PCACHE"); if (pc) {
+        char op[1200]; snprintf(op, sizeof op, "%s", pc); char *sl = strrchr(op, '/');
+        if (sl) { snprintf(sl + 1, sizeof op - (size_t)(sl + 1 - op), "shader_override/%s.spv", hex); size_t on = 0; uint32_t *oc = file_read(op, &on);
+            if (oc && on >= 20 && oc[0] == 0x07230203u) { free(code); code = oc; ns = on; free(glcode); glcode = NULL; ngl = 0; VLOG("shader %s: our own version (shader_override, %zu bytes)", hex, on); }
+            else free(oc); } } }
     if (!code || !meta) { VLOG("[RED] shader %s: %s missing", hex, !code ? "SPIR-V" : "reflection (.vkr)"); free(code); free(meta); free(glcode); return NULL; }
     meta = realloc(meta, nr + 1); meta[nr] = 0;
     vshader *s = calloc(1, sizeof *s); strcpy(s->key, hex); s->stage = st; s->shift = stage_shift(st);
