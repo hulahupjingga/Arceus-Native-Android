@@ -4429,6 +4429,23 @@ static void shot_ex(vtex *x, const int crop[4], const char *path, uint32_t lv, u
     vkDestroyImage(g_dev, im, NULL); vk_free(ia); vkDestroyBuffer(g_dev, b, NULL); vk_free(ba);
     VLOG("screenshot %s (%ux%u)", path, w, h);
 }
+// ---------- Photos: the Switch's Capture button (Arceus-Native-Android #56, #64) ----------
+// The touch button (touch_ui.c) asks; the next present saves the game's frame (the picture the player sees, before the touch controls are drawn over it) as a PNG in
+//   DM_CAPTURE_DIR, and the app adds it to the phone's gallery (android_main.c front_capture_saved). Where the game forbids screenshots (nn::oe::DisableScreenShot,
+//   hle_oe.c dm_shot_allowed), as on the console, nothing is saved and the app says so
+static _Atomic int g_capture_req;
+void dm_capture_request(void) { atomic_store(&g_capture_req, 1); }
+__attribute__((weak)) volatile int dm_shot_allowed = 1;
+__attribute__((weak)) void front_capture_saved(const char *path, int ok) { (void)path; (void)ok; }
+static void capture_now(vtex *x, const int crop[4]) {
+    if (!dm_shot_allowed) { VLOG("photo: the game does not allow screenshots here"); front_capture_saved(NULL, -1); return; }
+    const char *dir = getenv("DM_CAPTURE_DIR"); if (!dir || !*dir || !x || !x->img) { front_capture_saved(NULL, 0); return; }
+    time_t tt = time(NULL); struct tm tm; localtime_r(&tt, &tm); char path[1024];
+    snprintf(path, sizeof path, "%s/Photo_%04d%02d%02d_%02d%02d%02d.png", dir, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    shot(x, crop, path);
+    FILE *f = fopen(path, "rb"); int ok = f != NULL; if (f) fclose(f);
+    front_capture_saved(path, ok);
+}
 // ---------- Window presentation (Android: the app's ANativeWindow, front_metal_layer()) ----------
 // A FIFO swapchain the size of the window; each present blits the game's window texture into it, scaled to fit with black bars, flipped in GL (lower-left) mode,
 // through a swapchain format of the same sRGB-ness as the game's texture so its bytes reach the screen unchanged
@@ -5254,6 +5271,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (nshot < 0) { nshot = 0; const char *e = getenv("DM_NVN_SHOT"), *c = e ? strchr(e, ':') : NULL;
         if (c) { shot_path = c + 1; for (const char *q = e; q < c && nshot < 256; q = strchr(q, ',') ? strchr(q, ',') + 1 : c) shots[nshot++] = atol(q); } }
     for (int i = 0; i < nshot; i++) if ((long)n == shots[i]) { vtex *x = tex_res(t); char path[1024]; snprintf(path, sizeof path, shot_path, (int)n); if (x && x->img) shot(x, crop, path); }
+    if (atomic_exchange(&g_capture_req, 0)) capture_now(tex_res(t), crop);   // (before the touch controls are drawn over the frame)
     if (front_metal_layer()) present_window(tex_res(t), crop);
 #ifndef __ANDROID__
     { static long of = -1; static const char *op; if (of < 0) { const char *e = getenv("DM_OVL_SHOT"), *c = e ? strchr(e, ':') : NULL; of = c ? atol(e) : 0; op = c ? c + 1 : NULL; }

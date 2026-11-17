@@ -125,6 +125,28 @@ static void *open_menu_main(void *p) {
     (*vm)->DetachCurrentThread(vm);
     return NULL;
 }
+// The Capture button's photo (nvn_vk.c capture_now, on the present thread): the app moves it into the phone's gallery (Pictures/<app name>, app/java/com/nxnative/Captures.java)
+//   and shows a short note; status 1 saved (path), 0 failed, -1 the game does not allow screenshots here. The Java call runs on a thread of its own
+struct capture_msg { char path[1024]; int status; };
+static void *capture_main(void *p) {
+    struct capture_msg *m = p; JavaVM *vm = g_app->activity->vm; JNIEnv *e;
+    if ((*vm)->AttachCurrentThread(vm, &e, NULL)) { free(m); return NULL; }
+    jobject act = g_app->activity->clazz; jclass ac = (*e)->GetObjectClass(e, act);
+    jobject cl = (*e)->CallObjectMethod(e, act, (*e)->GetMethodID(e, ac, "getClassLoader", "()Ljava/lang/ClassLoader;"));
+    jclass clc = (*e)->FindClass(e, "java/lang/ClassLoader");
+    jclass cc = (jclass)(*e)->CallObjectMethod(e, cl, (*e)->GetMethodID(e, clc, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;"), (*e)->NewStringUTF(e, "com.nxnative.Captures"));
+    if ((*e)->ExceptionCheck(e) || !cc) { (*e)->ExceptionClear(e); fprintf(stderr, "[RED] photo: the Captures class is missing\n"); }
+    else { (*e)->CallStaticVoidMethod(e, cc, (*e)->GetStaticMethodID(e, cc, "publish", "(Landroid/app/Activity;Ljava/lang/String;I)V"), act, (*e)->NewStringUTF(e, m->path), (jint)m->status);
+           if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionDescribe(e); (*e)->ExceptionClear(e); } }
+    (*vm)->DetachCurrentThread(vm); free(m);
+    return NULL;
+}
+void front_capture_saved(const char *path, int ok) {
+    struct capture_msg *m = calloc(1, sizeof *m); if (!m) return;
+    snprintf(m->path, sizeof m->path, "%s", path ? path : ""); m->status = ok;
+    fprintf(stderr, "photo: %s\n", ok > 0 ? m->path : ok < 0 ? "not allowed here (the game's screenshot switch)" : "could not be saved");
+    pthread_t th; if (pthread_create(&th, NULL, capture_main, m)) free(m); else pthread_detach(th);
+}
 void front_open_menu(int what) {
     static _Atomic long long last_ms; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); long long t = ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
     if (t - atomic_load(&last_ms) < 500) return;   // one dialog per press
@@ -951,6 +973,7 @@ static void host_start(void) {
 #endif   // the profile's android_op_mode (env.txt DM_OPMODE wins)
 #endif   // real sound output (AAudio, compat/aaudio_unit.c); env.txt can set 0
     // pipelines: every one the game makes is recorded here and built ahead at the next start, the list shipped with the game too, and the driver's compiled code kept
+    SETP("DM_CAPTURE_DIR", "captures"); mkdir(p, 0770);   // the Capture button's photos, before the app moves them into the gallery (front_capture_saved)
     SETP("DM_MODS_DIR", "mods");   // IPSwitch .pchtxt code mods, applied when their build ID matches (loader.c); env.txt may point elsewhere
     snprintf(p, sizeof p, "%s/mods", g_files); mkdir(p, 0770);   // made by the app itself, so it can read what is put there (a folder another user made, adb's for one, it cannot)
     boot_guard(p);   // (before the mods are read: a crash with mods switches them off)

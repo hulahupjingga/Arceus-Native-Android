@@ -85,8 +85,10 @@ HLE_FORCE("_ZN2nn2oe14ExecuteProgramEiPKvm", "launch another program of the appl
     (void)param; LOG("[RED] oe::ExecuteProgram(%d, %zu bytes of parameters): the host runs only this program; the game carries on", index, n);
 }
 HLE_FORCE("_ZN2nn2oe16DisableRecordingEv", "video recording switch; the host has no system recording", void, h_oe_DisableRec, void) {}
-HLE_FORCE("_ZN2nn2oe16EnableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_EnableShot, void) {}
-HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_DisableShot, void) {}
+// the game's switch decides whether the Capture button (the touch button, nvn_vk.c capture_now) may take a photo, as on the console
+volatile int dm_shot_allowed = 1;
+HLE_FORCE("_ZN2nn2oe16EnableScreenShotEv", "screenshot switch: photos allowed (the Capture button)", void, h_oe_EnableShot, void) { dm_shot_allowed = 1; }
+HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "screenshot switch: photos not allowed here (the Capture button)", void, h_oe_DisableShot, void) { dm_shot_allowed = 0; }
 // Super Mario Odyssey: HOME button blocking around its own menus, screenshot orientation, and the auto-sleep query (all through am)
 HLE_FORCE("_ZN2nn2oe23BeginBlockingHomeButtonEv", "temporarily block the HOME button (through am); the host has no HOME button", void, h_oe_BlockHome, void) {}
 HLE_FORCE("_ZN2nn2oe21EndBlockingHomeButtonEv", "restore the HOME button (through am)", void, h_oe_UnblockHome, void) {}

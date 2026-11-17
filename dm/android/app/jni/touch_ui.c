@@ -31,7 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { C_STICK, C_CAM, C_RSTICK, C_A, C_B, C_X, C_Y, C_L, C_R, C_ZL, C_ZR, C_PLUS, C_MINUS, C_UP, C_DOWN, C_LEFT, C_RIGHT, C_THROW, C_MENU, C_BACK, C_SEL, C_LOCK, C_L3, C_R3, NCTL };   // (C_MENU: the ☰ button, the in-game settings; C_BACK: the game's own Back; C_L3 / C_R3: pressing the sticks)
+enum { C_STICK, C_CAM, C_RSTICK, C_A, C_B, C_X, C_Y, C_L, C_R, C_ZL, C_ZR, C_PLUS, C_MINUS, C_UP, C_DOWN, C_LEFT, C_RIGHT, C_THROW, C_MENU, C_BACK, C_SEL, C_LOCK, C_L3, C_R3, C_SHOT, NCTL };   // (C_MENU: the ☰ button, the in-game settings; C_BACK: the game's own Back; C_L3 / C_R3: pressing the sticks)
 typedef struct { float cx, cy, r; int glyph, shown; uint64_t btn; } ctl;
 static ctl g_c[NCTL];
 static float g_w, g_h;
@@ -67,7 +67,7 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ?
 
 // ---------- the player's layout (the in-game editor): position, size and visibility of each control, kept in <files>/touch_layout.txt ----------
 // One line per changed control: "<name> <x / width> <y / height> <radius / height> <shown>"; controls without a line keep the default layout
-static const char *const CTL_NAME[NCTL] = { "stick", "camera", "rstick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "up", "down", "left", "right", "throw", "menu", "back", "sel", "lock", "l3", "r3" };
+static const char *const CTL_NAME[NCTL] = { "stick", "camera", "rstick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "up", "down", "left", "right", "throw", "menu", "back", "sel", "lock", "l3", "r3", "photo" };
 static struct { int set; float fx, fy, fr; int shown; } g_ov[NCTL];
 static char g_lay_path[1100]; static int g_lay_loaded;
 void touch_ui_set_dir(const char *dir) { snprintf(g_lay_path, sizeof g_lay_path, "%s/touch_layout.txt", dir); g_lay_loaded = 0; }
@@ -131,7 +131,10 @@ static void layout(float w, float h) {
     g_c[C_THROW] = (ctl){ w - 0.68f * s, h - 0.42f * s, 0.062f * s, OVL_G_NONE, GESTURES_ON && ball, DM_BTN_ZR };   // the size of Naruto Storm's shuriken button; touched over 1.3 times that (hit)
     g_c[C_LOCK] = (ctl){ w - 0.68f * s, h - 0.58f * s, 0.040f * s, OVL_G_NONE, GESTURES_ON && ball, 0 }; }  // lock-on (g_lockon), above the ball
     g_c[C_RSTICK] = (ctl){ w - 0.80f * s, h - 0.19f * s, 0.11f * s, OVL_G_NONE, 1, 0 };
-    g_c[C_MENU] = (ctl){ w * 0.5f - 0.24f * s, 0.06f * s, mr, OVL_G_NONE, 1, 0 };   // ☰ just left of −, at the top centre: the settings (front_open_menu); no Switch button
+    g_c[C_MENU] = (ctl){ w * 0.5f - 0.24f * s, 0.06f * s, mr, OVL_G_NONE, 1, 0 };
+    // the Switch's Capture button (#56, #64: the Photo Studio's pictures are taken with it): just right of +, mirroring the menu button; a tap saves the frame to the
+    //   phone's gallery (nvn_vk.c dm_capture_request, android_main.c front_capture_saved). Move or hide it in the layout editor
+    g_c[C_SHOT] = (ctl){ w * 0.5f + 0.24f * s, 0.06f * s, mr, OVL_G_NONE, 1, 0 };   // ☰ just left of −, at the top centre: the settings (front_open_menu); no Switch button
     // L3 / R3 (pressing a stick in, #108): small buttons just above each stick, outside its touch area (1.3 x its radius) and clear of the D-pad and A B X Y on
     //   16:9 to 20:9 screens; hide or move them in the layout editor like any other
     g_c[C_L3] = (ctl){ g_c[C_STICK].cx, g_c[C_STICK].cy - 0.22f * s, 0.05f * s, OVL_G_L3, 1, DM_BTN_LS };
@@ -218,7 +221,8 @@ static int32_t ax(float v) { v = clampf(v, -1, 1); return (int32_t)(v * DM_STICK
 
 #ifdef __ANDROID__
 void touch_menu_tap(float x, float y, float w, float h);   // touch_menu.c
-void front_open_menu(int what);   // android_main.c: the in-game settings (GameMenu.java), 0 = all, 1 = the controller buttons
+void front_open_menu(int what);
+void dm_capture_request(void);   // nvn_vk.c: save the next presented frame as a photo (the Capture button)   // android_main.c: the in-game settings (GameMenu.java), 0 = all, 1 = the controller buttons
 void touch_menu_scroll(int right, int down);                // touch_menu.c: D-pad steps on the open menu
 void touch_menu_back(void);                                  // touch_menu.c: B for the game's own Back prompt, after the taps waiting
 void touch_menu_drag_rate(float r);                          // touch_menu.c: a scroll drag on the menu, -1..1 (up the list positive): rows stepped while it lasts
@@ -549,6 +553,7 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
             if (sb) { dm_input_press(sb, 80000000ull); click_locked(); g_cam_vx = g_cam_vy = 0; }
         }
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id && g_ptr[i].target == C_MENU && hit(C_MENU, g_ptr[i].x, g_ptr[i].y, 1.5f)) { click_locked(); front_open_menu(0); }
+        for (int i = 0; i < 10; i++) if (g_ptr[i].id == id && g_ptr[i].target == C_SHOT && hit(C_SHOT, g_ptr[i].x, g_ptr[i].y, 1.5f)) { click_locked(); dm_capture_request(); }
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id) { if (g_ptr[i].target == C_CAM) g_cam_vx = g_cam_vy = 0; g_ptr[i].id = -1; }
     }
     // A finger the system never lifted: every move (and every new finger) lists all fingers down, so one held here that the event does not list has gone without
@@ -658,6 +663,17 @@ static void pokeball(dm_ovl_item *it, int *n, int max, const ctl *c, int on, flo
     o = add(it, n, max, x, y, r, OVL_RING, 210, 225, 240, 0.9f * a); if (o) o->ring = clampf(2.6f * th / r, 0.01f, 0.2f);
 }
 // the settings button: a bubble with three white bars (☰)
+// the Capture button: a camera, a rounded body with a lens ring and a viewfinder bump on top
+static void camera_icon(dm_ovl_item *it, int *n, int max, const ctl *c, float a) {
+    bubble(it, n, max, c, 0, 0, a);
+    float r = c->r, bw = r * 1.00f, bh = r * 0.66f, by = c->cy + r * 0.06f;
+    dm_ovl_item *o = add(it, n, max, c->cx, by, r, OVL_RRECT, 255, 255, 255, 0.95f * a);
+    if (o) { o->x = c->cx - bw / 2; o->y = by - bh / 2; o->w = bw; o->h = bh; o->radius = 0.25f; }
+    o = add(it, n, max, c->cx - r * 0.18f, by - bh / 2 - r * 0.07f, r, OVL_RRECT, 255, 255, 255, 0.95f * a);
+    if (o) { o->x = c->cx - r * 0.34f; o->y = by - bh / 2 - r * 0.14f; o->w = r * 0.32f; o->h = r * 0.16f; o->radius = 0.3f; }
+    add(it, n, max, c->cx, by, r * 0.27f, OVL_DISC, 40, 40, 40, 0.85f * a);
+    o = add(it, n, max, c->cx, by, r * 0.21f, OVL_RING, 255, 255, 255, 0.95f * a); if (o) o->ring = 0.35f;
+}
 static void menu_icon(dm_ovl_item *it, int *n, int max, const ctl *c, float a) {
     bubble(it, n, max, c, 0, 0, a);
     float bw = c->r * 0.95f, bh = c->r * 0.13f;
@@ -725,7 +741,7 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
             if (GESTURES_ON && !k->shown && !g_ov[c].set && c != C_PLUS && c != C_MINUS && c != C_STICK && c != C_MENU) continue;
             float a = k->shown ? 1.0f : 0.3f;
             if (c == C_STICK || c == C_RSTICK) compass(it, &n, max, a, k->cx, k->cy, k->cx, k->cy, k->r);
-            else if (c == C_THROW) pokeball(it, &n, max, k, 0, a); else if (c == C_MENU) menu_icon(it, &n, max, k, a); else bubble(it, &n, max, k, 0, 0, a);
+            else if (c == C_THROW) pokeball(it, &n, max, k, 0, a); else if (c == C_MENU) menu_icon(it, &n, max, k, a); else if (c == C_SHOT) camera_icon(it, &n, max, k, a); else bubble(it, &n, max, k, 0, 0, a);
             dm_ovl_item *o = add(it, &n, max, k->cx, k->cy, k->r * 1.12f, OVL_RING, 255, 210, 60, 0.95f * a); if (o) o->ring = clampf(4.0f * (g_h / 1080.0f) / (k->r * 1.12f), 0.02f, 0.3f); }
     } else if (g_visible) {
         double t = now_s(); int idle = (g_fade > 0 && t - g_touch_t > g_fade) && !g_btn && !g_stick_on && !g_rstick_on;   // nothing touched for the fade time: everything faint (in menus and cutscenes too: hiding them there broke the flow of play)
@@ -746,7 +762,8 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
                 dm_ovl_item *o = add(it, &n, max, g_c[c].cx, g_c[c].cy, r * 0.55f, OVL_RING, 255, 255, 255, 0.95f * (g_lockon ? 1.0f : al)); if (o) o->ring = 0.28f;
                 add(it, &n, max, g_c[c].cx, g_c[c].cy, r * 0.14f, OVL_DISC, 255, 255, 255, 0.95f * (g_lockon ? 1.0f : al));
                 continue; }
-            if (c == C_MENU) { menu_icon(it, &n, max, &g_c[c], idle ? fmaxf(al, 0.45f) : al); continue; }   // (never quite gone: it is how the settings are found)
+            if (c == C_MENU) { menu_icon(it, &n, max, &g_c[c], idle ? fmaxf(al, 0.45f) : al); continue; }
+            if (c == C_SHOT) { camera_icon(it, &n, max, &g_c[c], al); continue; }   // (never quite gone: it is how the settings are found)
             bubble(it, &n, max, &g_c[c], on, 0, al);
             if (c >= C_UP && c <= C_RIGHT && al == 1.0f) { float r = g_c[c].r, ox = c == C_LEFT ? -0.42f : c == C_RIGHT ? 0.42f : 0, oy = c == C_UP ? -0.42f : c == C_DOWN ? 0.42f : 0;
                 add(it, &n, max, g_c[c].cx + ox * r, g_c[c].cy + oy * r, r * 0.22f, OVL_DISC, 255, 255, 255, 0.9f); } }
