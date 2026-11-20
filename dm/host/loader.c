@@ -680,11 +680,23 @@ static int arc_scale(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     LOG("%s: 3D render scale for Legends: Arceus 1.1.1: %.2f on the game's own (8 reads of 3DBufferWidthScale / HeightScale; the slider changes it live)", m->name, (double)c);
     return 9;
 }
+// Legends: Arceus 1.1.1 heap trim (DM_ARC_RESERVE_MB=64..338, opt-in, for phones short of memory): the game's heap registry (main+0x2626944) makes each heap with
+//   `mov w1, #size` then bl main+0x84b1c0; RESERVE is 339 MB (`mov w1, #0x15300000` @+0x2626c2c), the first one to measure (GFX2 800 MB, APP 700 MB, FILE_MANAGER 250 MB
+//   are the others above 200 MB). A smaller size is the same MOVZ with another immediate (64 KB steps). Off by default until a phone run shows the game's use of it
+static int arc_reserve(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_ARC_RESERVE_MB"); int mb = e ? atoi(e) : 0; if (mb <= 0) return 0;
+    const uint64_t site = 0x2626c2c; const uint32_t orig = 0x52a2a601u; uint32_t w; memcpy(&w, m->base + site, 4);
+    if (mb < 64 || mb > 338) { LOG("[RED] DM_ARC_RESERVE_MB=%s: must be 64 - 338; the game's 339 MB", e); return 0; }
+    if (site + 4 > m->text_end || w != orig || overlaps_rewrite(m, site, 4, p0, p1)) { LOG("[RED] %s: RESERVE heap trim not applied: the size instruction differs at +%#llx", m->name, (unsigned long long)site); return 0; }
+    w = 0x52a00000u | ((uint32_t)mb << 4) << 5 | 1; memcpy(m->base + site, &w, 4);
+    LOG("%s: Legends: Arceus RESERVE heap %d MB instead of 339 (DM_ARC_RESERVE_MB)", m->name, mb);
+    return 1;
+}
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
     (void)modded;
     if (strcmp(m->name, "main")) return 0;
     int n = bmod_apply(m, lim, p0, p1);
-    if (!strncasecmp(m->build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) return n + arc_wide(m, lim, p0, p1) + arc_res(m, p0, p1) + arc_wide_render(m, p0, p1) + arc_pool_retry(m, lim, p0, p1) + arc_scale(m, lim, p0, p1);   // (Legends: Arceus 1.1.1: its 60 is hle_nvn.c arc_step, not the Sword / Shield patch)
+    if (!strncasecmp(m->build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) return n + arc_wide(m, lim, p0, p1) + arc_res(m, p0, p1) + arc_wide_render(m, p0, p1) + arc_pool_retry(m, lim, p0, p1) + arc_scale(m, lim, p0, p1) + arc_reserve(m, p0, p1);   // (Legends: Arceus 1.1.1: its 60 is hle_nvn.c arc_step, not the Sword / Shield patch)
     return n + (g_bmod_fps ? 0 : fps_patch(m, lim, p0, p1));
 }
 // Built-in: DM_FPS_TARGET=60..120 (opt-in, the in-game menu; experimental) for Pokémon Shield and Sword 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps),

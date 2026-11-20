@@ -67,7 +67,25 @@ void dm_res_factor_set(float f) {
 }
 static float factor_now(void) { uint32_t b = g_factor_bits; float f; memcpy(&f, &b, sizeof f); return f; }
 
+// Legends: Arceus 1.1.1, crash #3 (loader.c arc_pool_retry): the pool flush waits each ticket through the sync object in main+0x42f1790 (its vtable +0x10); the default
+//   object's wait (main+0x2acbe3c) is a no-op, which would let a flushed slot be reused before the GPU is done. Logged once, about 10 s in, so the next log says which
+//   object the game installs: its vtable and wait function as main offsets (or outside main)
+static void arc_sync_log(void) {
+    static int done; static uint64_t n; if (done || ++n < 600) return; done = 1;
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !strncasecmp(g_mod[i].build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) {
+        uint64_t b = (uint64_t)(uintptr_t)g_mod[i].base, obj = 0, vt = 0, wait = 0;
+        if (!rd(b + 0x42f1790, &obj, 8) || !obj) { LOG("crash #3 sync object (main+0x42f1790): not set"); return; }
+        int okv = rd(obj, &vt, 8) && vt && rd(vt + 0x10, &wait, 8);
+        #define ARC_OFF(x) ((x) >= b && (x) - b < 0x8000000 ? (unsigned long long)((x) - b) : 0ull)
+        LOG("crash #3 sync object (main+0x42f1790): %s%#llx, vtable %s%#llx, wait %s%#llx%s", ARC_OFF(obj) ? "main+" : "", ARC_OFF(obj) ? ARC_OFF(obj) : (unsigned long long)obj,
+            okv && ARC_OFF(vt) ? "main+" : "", okv ? (ARC_OFF(vt) ? ARC_OFF(vt) : (unsigned long long)vt) : 0ull, okv && ARC_OFF(wait) ? "main+" : "",
+            okv ? (ARC_OFF(wait) ? ARC_OFF(wait) : (unsigned long long)wait) : 0ull, okv && ARC_OFF(wait) == 0x2acbe3c ? " (the default no-op wait: tickets are not really waited for)" : "");
+        #undef ARC_OFF
+        return;
+    }
+}
 void dm_res_scale_tick(void) {
+    arc_sync_log();
     static float game = -1, wrote = -1; static uint64_t n; static int nlog;
     int k = row(); if (k < 0) return;
     uint64_t obj;
