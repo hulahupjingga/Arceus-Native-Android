@@ -60,7 +60,7 @@ Arceus is played by touch the way the game invites: only the movement stick, **�
 - **In menus:** tap items directly. The game's own **B Back** prompt is the back button. On the map, drag to pan and pinch to zoom.
 - **Controllers:** hide the touch controls automatically. Hold **−** and **+** together for 1 s for ☰, or **−** for 3 s to remap buttons.
 - **Touch controls:** frosted grey so they sit on the picture, and they fade when untouched. Move them, or switch on L3 / R3, in ☰ → Controls.
-- **Logs:** `Download/PokemonLegendsArceus-log.txt`.
+- **Logs:** `Documents/NXNative/Logs/PokemonLegendsArceus-log.txt` (the run before: `…-log-previous.txt`). If that folder cannot be written, they go to `Download/` as before.
 
 ## Settings (☰)
 
