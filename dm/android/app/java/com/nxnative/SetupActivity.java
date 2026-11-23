@@ -84,29 +84,48 @@ public final class SetupActivity extends Activity {
         }
         return block;
     }
-    // (translated: the dialog came half in English in the Portuguese app, #82)
-    private static String driverAdvice(android.content.Context c, String gpu) {
+    // (translated: the dialog came half in English in the Portuguese app, #82). Also MaliLadder's PanVK offer, for a GPU no PanVK build is known for
+    static String driverAdvice(android.content.Context c, String gpu) {
         String g = gpu.toLowerCase(java.util.Locale.ROOT);
         if (g.contains("adreno")) return T.t(c, "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.");
-        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return T.t(c, "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.");
+        if (DriverPackages.panvkBifrost(g)) return T.t(c, "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.");
         return T.t(c, "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.");
     }
     // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
     private boolean isReady(String id) {
         File d = id.equalsIgnoreCase(GameSettings.games(this).get(0)[0]) ? GameSettings.root(this) : new File(GameSettings.root(this), id);
-        return new File(d, "ready").exists() && new File(d, "shaders.pak").exists();
+        return new File(d, "ready").exists() && new File(d, "shaders.pak").exists() && packComplete(d);
+    }
+    // A shader pack that holds the game's shaders, not only the first part of them: v0.69-v0.76's fast setup made a pack of the ~2,400 shaders that reach the overworld
+    //   and translated the rest in the background, which on many phones never reached the pack (Galar-Native-Android #173 #181 #195 #209 #214 #224 #225: 2,349-2,410
+    //   of ~38,500, the ground, buildings and whole areas undrawn, crashes on the first outdoor load). Such a pack counts as not set up, so Set up runs the full
+    //   translation again (the shaders already translated are kept). The count is the pack's header (NXSP, u32 at offset 8) against the setup's shader_map.tsv lines
+    static boolean packComplete(File d) {
+        File pak = new File(d, "shaders.pak"), map = new File(d, "shader_map.tsv");
+        int have = -1, want = 0;
+        try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(pak, "r")) { byte[] h = new byte[12]; f.readFully(h);
+            if (h[0] == 'N' && h[1] == 'X' && h[2] == 'S' && h[3] == 'P') have = (h[8] & 0xff) | (h[9] & 0xff) << 8 | (h[10] & 0xff) << 16 | (h[11] & 0xff) << 24; } catch (IOException e) { return true; }
+        if (have < 0) return true;   // (not a pack this check knows: left to the engine)
+        try (BufferedReader r = new BufferedReader(new FileReader(map))) { String l; while ((l = r.readLine()) != null) if (!l.isEmpty() && l.charAt(0) != '#') want++; } catch (IOException e) { return have >= 10000; }
+        return want == 0 || have >= want * 9L / 10;
     }
     private List<String> readyGames() { List<String> r = new ArrayList<>(); for (String[] g : GameSettings.games(this)) if (isReady(g[0])) r.add(g[0]); return r; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
-    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && packComplete(gameDir()); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
     // an update that changes the chain otherwise starts the game with a pack the engine refuses (every 3D shader "SPIR-V missing")
     private boolean ready() { return setUp() && chainCurrent(); }
-    private boolean chainCurrent() {
+    private boolean chainCurrent() { return chainCurrent(this, gameDir()); }
+    static boolean chainCurrent(android.content.Context c, File gameDir) {
         String want, have;
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(getAssets().open("shader_chain")))) { want = r.readLine(); } catch (IOException e) { return true; }   // an older build without the asset
-        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getAssets().open("shader_chain")))) { want = r.readLine(); } catch (IOException e) { return true; }   // an older build without the asset
+        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir, "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
         return want != null && have != null && want.trim().equals(have.trim());
+    }
+    // the game set up, but its shader pack is for another translation or incomplete: started straight into the game (a shortcut, adb), it would draw nothing but
+    //   the clear colour (#215: a flat blue screen); GameActivity sends it here, where the shaders are updated first (shadersOnly)
+    static boolean shadersStale(android.content.Context c, File gameDir) {
+        return new File(gameDir, "ready").exists() && (!chainCurrent(c, gameDir) || !new File(gameDir, "shaders.pak").exists() || !packComplete(gameDir));
     }
 
     @Override protected void onCreate(Bundle b) {
@@ -121,6 +140,7 @@ public final class SetupActivity extends Activity {
         String[] signers = BuildSigner.digests(this); boolean official = BuildSigner.official(signers);
         envSet("DM_BUILD_SIGNER", BuildSigner.label(signers));
         if (!official) Toast.makeText(this, unofficial(), Toast.LENGTH_LONG).show();
+        AppUpdater.atStart(this, official);   // (an update found earlier is announced; a new look runs in the background and never holds the start)
         boolean asked = getIntent().getBooleanExtra("setup", false);
         // which game: a game's home screen shortcut names it; from the app's icon, with more than one game set up, this screen lets the player choose (the dual launcher)
         String want = getIntent().getStringExtra("game");
@@ -129,12 +149,34 @@ public final class SetupActivity extends Activity {
         else if (!running && !asked && GameSettings.games(this).size() > 1 && !readyGames().isEmpty()) { launcher(official); return; }
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         cleanLeftovers();   // (before the game may start straight away: a stopped setup's leftovers, in the background)
+        if (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && !packComplete(gameDir()) && !shadersOnly())   // (a fast setup's pack: packComplete)
+            Toast.makeText(this, T.t(this, "The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept)."), Toast.LENGTH_LONG).show();
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
+        // the last run crashed (Android's record of it, ApplicationExitInfo): offered once, a debug report for a GitHub issue (DebugBundle); Play goes on as a start would
+        if (ready() && !asked && !running && DebugBundle.offerAfterCrash(this, () -> { if (pendingWork(gameDir())) startCaptures(); else startGame(); })) asked = true;
+        // both of the Mali white-screen fixes were white on this phone's own driver (the engine's check, MaliLadder): PanVK offered once, before the game starts
+        if (ready() && !asked && !running && MaliLadder.offer(this, this::startGame, () -> pick(PICK_DRIVER, false))) asked = true;
         if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
         setupScreen(official);
         if (getIntent().getBooleanExtra("from_app", false)) startSetupFromApp();   // am start ... --ez setup true --ez from_app true: set up (again) from the installed app, over adb
         if (ready() && !asked) startCaptures();
+        else if (!running && shadersOnly()) startShadersOnly();
+    }
+    // A game set up before whose shaders this app version translates differently (its ready file names another chain), or whose pack is only partly there (packComplete):
+    //   only the shaders are made again, from what the earlier setup left in the game's folder (RomFS/, patched/main.patched.bin; setup_game.py --shaders-only). No files
+    //   to choose and nothing unpacked: before, every such update asked the player to choose their dump and set up again (v0.81, v0.83, v0.84)
+    private boolean shadersOnly() {
+        File d = gameDir();
+        return new File(d, "ready").exists() && new File(d, "RomFS").isDirectory() && new File(new File(d, "patched"), "main.patched.bin").isFile()
+            && (!chainCurrent() || !new File(d, "shaders.pak").exists() || !packComplete(d));
+    }
+    private void startShadersOnly() {
+        if (running) return;
+        bar.setMax(600); bar.setProgress(200);
+        status.setText(T.t(this, "This version translates the game's shaders differently: updating them now. Your files aren't needed and your save is kept. Keep this screen open; it takes about as long as the shader step of a setup."));
+        List<String> cmd = new ArrayList<>(); cmd.add("--shaders-only");
+        shadersOnlyRun = true; setup.setText(T.t(this, "Updating the shaders")); resumes = 0; workerCap = 0; runFullSetup(cmd);
     }
     // The setup screen, in the launcher's look: what a player sees first after installing. Three numbered steps (game files, keys, set up), then Play once the game is
     //   set up; the rest (which game, save data, the home screen shortcut, the graphics driver) under them, the driver folded away until asked for
@@ -361,6 +403,9 @@ public final class SetupActivity extends Activity {
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) { status.setText(DriverPackages.install(this, u, name)); refresh(); }   // (DriverPackages: shared with the in-game menu)
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
+    // the shader steps' small files (setup_game.py --scratch): app-private storage, not setup_work in shared storage, where each file goes through Android's FUSE layer
+    //   (#262, an S25+: 10,000 small files written in 0.5 s in private storage, 26 s in shared storage; the setup writes about 130,000). The same partition: no less room
+    static File scratchDir(Context c, File game) { return new File(new File(c.getNoBackupFilesDir(), "setup_scratch"), game.getName()); }
     private static long treeSize(File f) { if (f.isFile()) return f.length(); long s = 0; File[] k = f.listFiles(); if (k != null) for (File c : k) s += treeSize(c); return s; }
     // What a setup that stopped leaves behind (#47: 26 GB for a 10 GB game): its unpacked game in setup_work (about 12 GB; any later setup unpacks the game again, so it
     //   is never read once the app has restarted) and its scan, and the loose shader folder (vk/) of setups made before the shader pack. Not while a setup runs, nor
@@ -375,11 +420,14 @@ public final class SetupActivity extends Activity {
                 File work = new File(game, "setup_work"), log = new File(work, "setup.log");
                 if (running || (log.isFile() && System.currentTimeMillis() - log.lastModified() < 10 * 60 * 1000L)) continue;
                 boolean keepXlate = new File(work, "translated.json").isFile();
-                File[] w = work.listFiles();
-                if (w != null) for (File f : w) { String n = f.getName();
+                List<File> w = new ArrayList<>();
+                for (File d : new File[] { work, scratchDir(this, game) }) { File[] k = d.listFiles(); if (k != null) w.addAll(Arrays.asList(k)); }
+                for (File f : w) { String n = f.getName();
                     boolean drop = n.equals("extract") || n.equals("shader_pkg") || n.equals("cas") || n.equals("aoc") || n.startsWith("dmsh_")
-                        || (!keepXlate && (n.equals("vk") || n.equals("shader_cache")));
+                        || n.equals("shaders.raw.pak") || n.equals("shaders.new.pak") || (!keepXlate && (n.equals("vk") || n.equals("shader_cache")));
                     if (drop && !running) { freed += treeSize(f); deleteTree(f); } }
+                // what v0.69-v0.76's fast setup left for its background part (rest.json, rest/): nothing reads it any more, and a full Set up translates those shaders
+                for (String n : new String[] { "rest.json", "rest", "game_running" }) { File f = new File(game, n); if (f.exists() && !running) { freed += treeSize(f); deleteTree(f); } }
                 File vk = new File(game, "vk");
                 if (vk.isDirectory() && new File(game, "shaders.pak").isFile() && new File(game, "ready").isFile() && !running) { freed += treeSize(vk); deleteTree(vk); }
             }
@@ -400,7 +448,7 @@ public final class SetupActivity extends Activity {
         saveBox.setVisibility(setUp() || iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
         if (running && status.getText().length() == 0)   // a new screen while the setup (or a copy) another one started still runs
             status.setText(T.t(this, "Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished."));
-        if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
+        if (!running && setUp() && !chainCurrent() && !shadersOnly() && status.getText().length() == 0)
             status.setText(T.t(this, "This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept)."));
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
@@ -700,6 +748,7 @@ public final class SetupActivity extends Activity {
     }
     private void startSetup(boolean allowDamaged) {
         if (running || games.isEmpty()) return;
+        shadersOnlyRun = false;
         offerAnyway = false; anyway.setVisibility(android.view.View.GONE);
         String mixed = mixedGames(); if (mixed != null) { status.setText(mixed); return; }
         for (String g : games) if (!new File(g).canRead()) { status.setText(T.t(this, "Could not read %s.", new File(g).getName()) + " " + T.t(this, "Tap Clear and choose your files again.")); return; }
@@ -805,7 +854,9 @@ public final class SetupActivity extends Activity {
     // What the setup is doing, with the time it has been running under it (a ticker, every second): an hour-long step whose number stays at 99% (the last shaders,
     //   then the writing of the results, #56) still shows that it is alive
     private String runText = ""; private long runStart; private final android.os.Handler ticker = new android.os.Handler(android.os.Looper.getMainLooper());
-    private void show(String s) { runText = s; tick(); }
+    // A shaders-only update shows what it is above its step lines: players read the bare "Step 4 of 6" as a full setup again (#276 #278 #279)
+    private boolean shadersOnlyRun;
+    private void show(String s) { runText = shadersOnlyRun ? T.t(this, "Updating the shaders for this app version: your files aren't needed and your save is kept.") + "\n" + s : s; tick(); }
     private void tick() {
         if (!running) { status.setText(runText); return; }
         long t = (android.os.SystemClock.elapsedRealtime() - runStart) / 1000;
@@ -827,6 +878,7 @@ public final class SetupActivity extends Activity {
                 cmd.add(lib + "/libpython_exe.so"); cmd.add(new File(dm, "android/tools/setup_game.py").getPath());
                 cmd.addAll(args);
                 cmd.add("--out"); cmd.add(gameDir().getPath()); cmd.add("--work"); cmd.add(work.getPath()); cmd.add("--bin"); cmd.add(bin.getPath());
+                cmd.add("--scratch"); cmd.add(scratchDir(this, gameDir()).getPath());
                 File ext = new File(dm, "android/app/assets/nintendo_ext.ttf"); if (ext.exists() && !args.contains("--captures")) { cmd.add("--ext-font"); cmd.add(ext.getPath()); }
                 if (!args.contains("--captures")) {   // the dump says which game it is: setup puts it in that game's place (GAME line below), one of each game
                     StringBuilder ids = new StringBuilder(); for (String[] g : GameSettings.games(this)) ids.append(ids.length() > 0 ? "," : "").append(g[0]);
@@ -888,7 +940,7 @@ public final class SetupActivity extends Activity {
         File script = new File(dm, "android/tools/setup_game.py"); if (!script.isFile() || !new File(bin, "dmsh_xlate").exists()) return null;
         work.mkdirs();
         List<String> cmd = new ArrayList<>(Arrays.asList(c.getApplicationInfo().nativeLibraryDir + "/libpython_exe.so", script.getPath())); cmd.addAll(args);
-        cmd.addAll(Arrays.asList("--out", game.getPath(), "--work", work.getPath(), "--bin", bin.getPath()));
+        cmd.addAll(Arrays.asList("--out", game.getPath(), "--work", work.getPath(), "--bin", bin.getPath(), "--scratch", scratchDir(c, game).getPath()));
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true); toolEnv(c, pb, py, dm, bin, workers);
         return pb.start();
     }
@@ -942,5 +994,6 @@ public final class SetupActivity extends Activity {
         try (FileWriter w = new FileWriter(stamp)) { w.write(ver + "\n"); }
         return to;
     }
-    private void startGame() { GameActivity.viaSetup = true; startActivity(new Intent(this, GameActivity.class)); finish(); }
+    // (the driver check first, once per driver: DriverCheck.java)
+    private void startGame() { DriverCheck.thenRun(this, () -> { GameActivity.viaSetup = true; startActivity(new Intent(this, GameActivity.class)); finish(); }); }
 }

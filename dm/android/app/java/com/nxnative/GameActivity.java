@@ -30,7 +30,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
         //   (alive only after this: set before it, the setup screen took this finishing activity for a running game and sent the player back to it, round and round;
         //   the game named, so the launcher of two games does not come in between)
-        if (!viaSetup && SetupActivity.pendingWork(GameSettings.dir(this))) { startActivity(new Intent(this, SetupActivity.class).putExtra("game", GameSettings.game(this)[0])); finish(); return; }
+        if (!viaSetup && (SetupActivity.pendingWork(GameSettings.dir(this)) || SetupActivity.shadersStale(this, GameSettings.dir(this)))) { startActivity(new Intent(this, SetupActivity.class).putExtra("game", GameSettings.game(this)[0])); finish(); return; }
         alive = true;
         im = getSystemService(InputManager.class);
         if (im != null) im.registerInputDeviceListener(this, null);
@@ -38,7 +38,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         liveShaders();
         handheld();
         if (GameSettings.get(this, "DM_PERF_OVERLAY").equals("on")) perfOverlay(true);
-        displayMode(); sustained(); loadH.postDelayed(loadPoll, 2000);
+        displayMode(); sustained(); loadH.postDelayed(loadPoll, 2000); loadH.postDelayed(pwPoll, 300);
     }
     // ---------- the display matched to the game, always (no setting; DM_DISPLAY_RATE=phone in env.txt leaves the phone's own rate, for comparing) ----------
     // The lowest display mode of at least 60 Hz that the game's frames divide evenly: 60 Hz for a 30 fps game on a 120 Hz phone, which otherwise keeps its
@@ -50,8 +50,8 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             android.view.Display d = getDisplay(); if (d == null) return;
             int want = 0;
             if (!GameSettings.get(this, "DM_DISPLAY_RATE").equals("phone")) {
-                String fg = GameSettings.get(this, "DM_FRAMEGEN"); boolean gen = !fg.isEmpty() && !fg.equals("off");
-                String f = GameSettings.get(this, "DM_FPS_TARGET"); int fps = f.equals("60") ? 60 : 30;
+                String fg = GameSettings.get(this, "DM_FRAMEGEN"); boolean gen = GameSettings.experimentsUnlocked(this) && !fg.isEmpty() && !fg.equals("off");   // (locked off for now)
+                String f = GameSettings.get(this, "DM_FPS_TARGET"); int fps = f.equals("60") && GameSettings.has60(this) ? 60 : 30;
                 android.view.Display.Mode cur = d.getMode(), best = null;
                 for (android.view.Display.Mode m : d.getSupportedModes()) {
                     if (m.getPhysicalWidth() != cur.getPhysicalWidth() || m.getPhysicalHeight() != cur.getPhysicalHeight()) continue;
@@ -81,6 +81,35 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             try { Api33.loading(GameActivity.this, l == 1); } catch (RuntimeException | LinkageError e) { } }
         if (alive) loadH.postDelayed(this, 500);
     } };
+    // ---------- shaders built before the game starts (android_main.c nativePrewarm, nvn_vk.c DM_VK_PREWARM): a card with the count while the game waits ----------
+    private static native long nativePrewarm();
+    private android.app.Dialog pwDlg; private android.widget.TextView pwText; private android.widget.ProgressBar pwBar; private int pwIdle; private boolean pwSeen;
+    private final Runnable pwPoll = new Runnable() { @Override public void run() {
+        long v; try { v = nativePrewarm(); } catch (UnsatisfiedLinkError e) { return; }
+        if (v >= 0) { pwSeen = true; prewarmShow((int) (v >>> 32), (int) v); if (alive) loadH.postDelayed(this, 250); return; }
+        if (pwDlg != null) { try { pwDlg.dismiss(); } catch (RuntimeException e) { } pwDlg = null; }
+        if (alive && !pwSeen && ++pwIdle < 240) loadH.postDelayed(this, 250);   // (until the engine's Vulkan start, at most a minute)
+    } };
+    private void prewarmShow(int done, int total) {
+        if (pwDlg == null) {
+            try {
+                android.widget.LinearLayout c = new android.widget.LinearLayout(this); c.setOrientation(android.widget.LinearLayout.VERTICAL);
+                float dp = getResources().getDisplayMetrics().density; int p = Math.round(16 * dp);
+                android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable(); bg.setColor(0xE6202833); bg.setCornerRadius(16 * dp); c.setBackground(bg);
+                c.setPadding(p, Math.round(12 * dp), p, Math.round(12 * dp));
+                pwText = new android.widget.TextView(this); pwText.setTextColor(0xFFFFFFFF); pwText.setTextSize(15); c.addView(pwText);
+                pwBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); pwBar.setMax(1000);
+                android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(Math.round(280 * dp), -2); lp.topMargin = Math.round(8 * dp); c.addView(pwBar, lp);
+                pwDlg = new android.app.Dialog(this); pwDlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE); pwDlg.setContentView(c); pwDlg.setCancelable(false);
+                android.view.Window w = pwDlg.getWindow();
+                if (w != null) { w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0)); w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                    w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE); }
+                pwDlg.show();
+            } catch (RuntimeException e) { pwDlg = null; return; }
+        }
+        pwText.setText(T.t(this, "Building the shaders before the game starts: %d / %d", done, total));
+        pwBar.setProgress(total > 0 ? (int) (1000L * done / total) : 0);
+    }
     // Android 13's GameState in a class of its own, loaded only on 13+: inside the poller above, Android 12's verifier rejected the whole class over it and the app closed at
     //   the Game Freak logo (Arceus-Native-Android #19, a Snapdragon 865 on Android 12)
     private static final class Api33 { static void loading(android.content.Context c, boolean on) {
@@ -238,6 +267,8 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         } catch (Exception e) { }
         // the app's version code: a safe start level (android_main.c safe_start) belongs to the version that crashed; an update starts at the normal settings again
         try { android.system.Os.setenv("DM_APP_VERSION", String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode()), true); } catch (Exception e) { }
+        // the app's name and where its official releases are (the profile's app_name / app_repo, assets/app): the log's first lines name them (android_main.c)
+        try { String[] app = GameSettings.app(this); android.system.Os.setenv("DM_APP_NAME", app[0], true); android.system.Os.setenv("DM_APP_REPO", app[1], true); } catch (Exception e) { }
         // The Chinese / Korean shared-font stand-in (hle_sdk16.c, #62: a game set to Chinese drew none of its text) into the game's font/, for setups made before it
         //   shipped; the APK carries it (build_apk.py), copied when missing or of another size
         try {

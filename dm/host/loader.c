@@ -507,35 +507,148 @@ static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     if (files) LOG("%s: mods folder %s: %d .pchtxt file(s), %d patch(es) applied to this module", m->name, d, files, total);
     return total;
 }
-// Built-in patches. (No built-in 20:9 camera: the 16:9 that PR #48 patched, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which
-// the game replaces for the gameplay camera; patched, the picture was unchanged. DM_ASPECT=20:9 is the presentation alone, for a 20:9 .pchtxt mod.)
+// Built-in patches. (The 16:9 that PR #48 patched alone, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which the game replaces
+// for the gameplay camera: patched alone, the picture was unchanged. wide_patch below also patches where the gameplay camera takes it, and the culling.)
 int dm_step_hz; uint8_t *dm_step_word;   // the high frame rate below: its rate and the game's step word, which hle_nvn.c vstep_tick rewrites every frame
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
-// Built-in community mods (builtin_mods.h, from dm/games/*/builtin_mods/*.pchtxt), each behind a setting: Scarlet / Violet 4.0.0's dynamic frame rate (Fl4sh's ASM
-// "Dynamic FPS": up to 60, the game's step from the time each frame really took) with DM_FPS_TARGET=60, their 2048×2048 shadow maps (Fl4sh's "2K Shadows") with
-// DM_SHADOWS=2k. A mod goes in whole or not at all: every site must still hold the game's own bytes and none may be code the rewriter turned into a branch
+// Built-in code patches as .pchtxt files (builtin_mods.h, from dm/games/*/builtin_mods/*.pchtxt), each behind a setting: Scarlet / Violet 4.0.0's shadow map size,
+// 2048×2048 with DM_SHADOWS=2k (test only), 512×512 with DM_SHADOWS=low. A patch goes in whole or not at all: every site must still hold the game's own bytes and none
+// may be code the rewriter turned into a branch
 #include "builtin_mods.h"
 static int bmod_wanted(const char *name) {
-    if (!strcmp(name, "dynamic_fps")) { const char *e = getenv("DM_FPS_TARGET"); return e && atoi(e) >= 60; }
-    if (!strcmp(name, "shadows_2k")) { const char *e = getenv("DM_SHADOWS"); return e && !strcasecmp(e, "2k"); }   // (test only: not offered in the menu)
+    // the shadow map's size where the game makes it (main+0x146e80c MOVZ W8, #0x400: 1024): 2048 (a bigger map takes the game's GPU pool from streaming: test only,
+    //   not offered in the menu)
+    if (!strcmp(name, "shadows_high")) { const char *e = getenv("DM_SHADOWS"); return e && !strcasecmp(e, "2k"); }
+    // DM_SHADOWS=low: the same site, 512×512 instead of the game's 1024 (a quarter of the shadow map's pixels; a smaller map also leaves the game's GPU
+    //   pool more room, where a bigger one takes it from streaming). Not offered in the menu until seen on a phone
+    if (!strcmp(name, "shadows_low")) { const char *e = getenv("DM_SHADOWS"); return e && !strcasecmp(e, "low"); }
     return 0;
 }
-static int g_bmod_fps;   // the frame rate came from a built-in mod: the Sword / Shield patch below is not this game's
-int dm_dynfps;   // hle_nvn.c dyn_tick: Scarlet / Violet's Dynamic FPS is in, presentation is paced in steps of 30 / 60
+int dm_shadow_off;   // nvn_vk.c draw: DM_SHADOWS=off on Scarlet / Violet 4.0.0's main, the sun shadow pass's draws dropped
 static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     int total = 0;
     for (unsigned i = 0; i < sizeof BUILTIN_MODS / sizeof *BUILTIN_MODS; i++) {
         const bmod *b = &BUILTIN_MODS[i]; int hit = 0;
         for (int k = 0; b->builds[k]; k++) if (!strncasecmp(m->build_id, b->builds[k], 32)) hit = 1;
+        if (hit && !strcmp(b->name, "shadows_low") && !dm_shadow_off) { const char *e = getenv("DM_SHADOWS");   // (the shadow patches' builds are Scarlet / Violet 4.0.0)
+            if (e && !strcasecmp(e, "off")) { dm_shadow_off = 1; LOG("%s: shadows off (DM_SHADOWS=off): the sun shadow pass's draws are dropped", m->name); } }
         if (!hit || !bmod_wanted(b->name)) continue;
         int bad = -1;
         for (int s = 0; s < b->n && bad < 0; s++) { const bmod_site *t = &b->sites[s];
             if ((uint64_t)t->off + t->len > lim || memcmp(m->base + t->off, t->orig, t->len) || overlaps_rewrite(m, t->off, t->len, p0, p1)) bad = s; }
-        if (bad >= 0) { LOG("[RED] %s: built-in mod %s not applied: +%#x differs from the game's code or was rewritten", m->name, b->name, b->sites[bad].off); continue; }
+        if (bad >= 0) { LOG("[RED] %s: built-in patch %s not applied: +%#x differs from the game's code or was rewritten", m->name, b->name, b->sites[bad].off); continue; }
         for (int s = 0; s < b->n; s++) memcpy(m->base + b->sites[s].off, b->sites[s].mod, b->sites[s].len);
-        LOG("%s: built-in mod %s applied (%d sites)", m->name, b->name, b->n); total += b->n; if (!strcmp(b->name, "dynamic_fps")) g_bmod_fps = dm_dynfps = 1;
+        LOG("%s: built-in patch %s applied (%d sites)", m->name, b->name, b->n); total += b->n;
     }
     return total;
+}
+// Scarlet / Violet 4.0.0 up to 60 fps (DM_FPS_TARGET=60, the menu's 60 fps and Dynamic): our patch, paldea_fps.h (what each site is in the game's code). The host
+//   presents in whole vsyncs and writes the step the frame really took into the game's frame-time table (hle_nvn.c dyn_tick, dm_dyn_step)
+#include "paldea_fps.h"
+int dm_dynfps;   // hle_nvn.c dyn_tick: Scarlet / Violet at up to 60, presentation paced in steps of 30 / 60
+uint8_t *dm_dyn_step;   // hle_nvn.c dyn_tick: the game's step word (u64 ns) it writes every frame
+static int paldea_fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    if (!pfps_build(m->build_id) || !pfps_wanted(getenv("DM_FPS_TARGET"))) return 0;   // (at 30 nothing is written: the game's own code)
+    int bad = pfps_check(m->base, lim, m->text_end);
+    for (int i = 0; i < PFPS_NCODE && bad < 0; i++) if (overlaps_rewrite(m, PFPS_CODE[i].off, 4, p0, p1)) bad = i;
+    if (bad >= 0) { LOG("[RED] %s: 60 fps not applied: +%#llx differs from Scarlet / Violet 4.0.0's code or was rewritten; the game stays at its own 30", m->name,
+                        (unsigned long long)(bad < PFPS_NCODE ? PFPS_CODE[bad].off : PFPS_STEP)); return 0; }
+    pfps_write_code(m->base);
+    dm_dyn_step = m->base + PFPS_STEP; dm_dynfps = 1;
+    LOG("%s: up to 60 fps for Scarlet / Violet 4.0.0: present interval 1 (+%#x), the step the frame took in the game's frame-time table (+%#llx, 16.67 or 33.33 ms), "
+        "frame-time divisor kept at 30 fps (+%#x)", m->name, PFPS_CODE[0].off, (unsigned long long)PFPS_STEP, PFPS_CODE[1].off);
+    return PFPS_NCODE;
+}
+// Widescreen (DM_ASPECT=wide, the menu's Picture → Widescreen): the game's camera made as wide as the screen, for Sword and Shield 1.3.2, after Fl4sh's Ultrawide
+//   mods (16:10 / 21:9 / 32:9 .pchtxt), with this screen's own aspect (DM_WIDE_RATIO, its long side over its short, written by the app) instead of a fixed one.
+//   The frame stays 1280x720 (the picture fills the screen: nvn_ovl.h); what the camera sees is widened, so nothing is stretched. Three places:
+//   - the gameplay camera copies its parameters from the scene's (Shield / Sword +0x607670): the aspect, LDR W9, [X1, #0xd4] at +0x6076c4, becomes a branch into
+//     the three free words after the function before (+0x607664: MOV W9, #lo; MOVK W9, #hi, LSL #16; B back);
+//   - a camera object's default aspect, MOVK X9 #0x8e39 / #0x3fe3 (16:9) at +0x607de8 / +0x607dec;
+//   - culling (Shield +0xd93444, Sword +0xd93414): LDP X12, X13, [X0, #0xd0] takes the frustum's aspect into the copy on the stack, of which only the low word (the
+//     aspect) is ever read. Fl4sh's mod sets the top half of whatever X12 held (MOVK): here MOVZ W12, the aspect rounded up to its top 16 bits (culls a hair
+//     wider than it sees, never narrower), the same every frame.
+//   Every word is checked first (the three free words zero, the rest the game's own); a build or code that differs is left alone. The HUD is drawn in the same
+//   16:9 frame and is stretched with it: a widescreen mod's UI fix would be a separate patch
+static const struct { const char *build, *game; uint64_t cull; } WIDE_SITES[] = {
+    { "a16802625e7826bf83b6f9708e475b91", "Shield 1.3.2", 0xd93444 },
+    { "a3b75bcd3311385aeed67fbeeb79cbb7", "Sword 1.3.2", 0xd93414 },
+};
+// The HUD kept 16:9 in the middle with Widescreen (DM_WIDE_HUD=0: stretched as before). Every ui2d layout's 2D camera takes its projection from a param block
+//   {u32 type, l, r, b, t, near, far} (SetProjection main+0x6851c0 → matrix main+0x684ef0, type 2 = orthographic, one path for every 2D camera): nine HUD blocks
+//   {2, -960, 960, -540, 540, 0.1, 800} and the default {2, -640, 640, -360, 360, ...} at main+0x203fac8, in read-only data at the same addresses in Sword and Shield
+//   1.3.2. Their left / right times k = the screen's ratio / (16/9): the layout lands 16:9 in the middle of the wider picture, whether the game renders 16:9 (stretched
+//   to the screen) or the screen's own shape (DM_WIDE_RENDER). Each block's 28 bytes are checked first. Not yet seen on a phone: full-screen fades and menu
+//   backgrounds now cover the middle 16:9 only
+static int wide_hud_patch(module_t *m, double ratio, const char *game) {
+    const char *e = getenv("DM_WIDE_HUD"); if (e && !strcmp(e, "0")) return 0;
+    static const uint64_t B[10] = { 0x205f484, 0x2060404, 0x2060420, 0x2060458, 0x20604d4, 0x20620b0, 0x2062724, 0x2068a88, 0x2074650, 0x203fac8 };
+    static const float P1080[7] = { 0, -960.0f, 960.0f, -540.0f, 540.0f, 0.1f, 800.0f }, P720[7] = { 0, -640.0f, 640.0f, -360.0f, 360.0f, 0.1f, 800.0f };
+    float k = (float)(ratio / (16.0 / 9.0)); int n = 0;
+    for (unsigned i = 0; i < 10; i++) {
+        const float *want = i == 9 ? P720 : P1080; uint8_t *p = m->base + B[i]; uint32_t type;
+        if (B[i] + 28 > m->size) continue;
+        memcpy(&type, p, 4); if (type != 2 || memcmp(p + 4, want + 1, 24)) continue;
+        float lr[2] = { want[1] * k, want[2] * k }; memcpy(p + 4, lr, 8); n++;
+    }
+    if (n == 10) LOG("%s: widescreen HUD for %s: kept 16:9 in the middle (the 2D layouts' projection x %.4f)", m->name, game, (double)k);
+    else LOG("[RED] %s: widescreen HUD for %s: %d of 10 layout projections matched (the rest stay stretched)", m->name, game, n);
+    return n;
+}
+static int wide_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_ASPECT"); if (!e || strcmp(e, "wide")) return 0;
+    const char *r = getenv("DM_WIDE_RATIO"); double ratio = r ? atof(r) : 0;
+    int si = -1; for (unsigned i = 0; i < sizeof WIDE_SITES / sizeof *WIDE_SITES; i++) if (!strncasecmp(m->build_id, WIDE_SITES[i].build, 32)) si = (int)i;
+    if (si < 0) { LOG("[RED] %s: widescreen not applied (not Pokémon Sword / Shield 1.3.2's main)", m->name); return 0; }
+    if (ratio < 1.0 || ratio > 4.0) { LOG("[RED] %s: widescreen not applied (no screen aspect: DM_WIDE_RATIO %s)", m->name, r ? r : "not set"); return 0; }
+    if (ratio > 16.0 / 9.0 - 0.01 && ratio < 16.0 / 9.0 + 0.01) { LOG("%s: widescreen: this screen is 16:9 already", m->name); return 0; }
+    const uint64_t cave = 0x607664, ld = 0x6076c4, def = 0x607de8, cull = WIDE_SITES[si].cull;
+    static const uint32_t orig_ld = 0xb940d429u, orig_def[2] = { 0xf2d1c729u, 0xf2e7fc69u }, orig_cull = 0xa94d340cu, zero[3] = { 0, 0, 0 };
+    if (cull + 4 > m->text_end || memcmp(m->base + cave, zero, 12) || memcmp(m->base + ld, &orig_ld, 4) || memcmp(m->base + def, orig_def, 8) || memcmp(m->base + cull, &orig_cull, 4) ||
+        overlaps_rewrite(m, cave, 12, p0, p1) || overlaps_rewrite(m, ld, 4, p0, p1) || overlaps_rewrite(m, def, 8, p0, p1) || overlaps_rewrite(m, cull, 4, p0, p1)) {
+        LOG("[RED] %s: widescreen not applied (%s: the camera or culling code differs, or was rewritten)", m->name, WIDE_SITES[si].game); return 0; }
+    float f = (float)ratio; uint32_t b; memcpy(&b, &f, 4); uint32_t lo = b & 0xffff, hi = b >> 16, hc = (b + 0xffffu) >> 16;
+    uint32_t w[3] = { 0x52800000u | lo << 5 | 9, 0x72a00000u | hi << 5 | 9, 0x14000000u | (uint32_t)(((int64_t)(ld + 4) - (int64_t)(cave + 8)) >> 2 & 0x3ffffff) };   // MOV W9 / MOVK W9 / B back
+    uint32_t br = 0x14000000u | (uint32_t)(((int64_t)cave - (int64_t)ld) >> 2 & 0x3ffffff);
+    uint32_t dw[2] = { 0xf2c00000u | lo << 5 | 9, 0xf2e00000u | hi << 5 | 9 };   // MOVK X9, #lo, LSL #32 / MOVK X9, #hi, LSL #48
+    uint32_t cw = 0x52a00000u | hc << 5 | 12;   // MOVZ W12, #hc, LSL #16
+    memcpy(m->base + cave, w, 12); memcpy(m->base + ld, &br, 4); memcpy(m->base + def, dw, 8); memcpy(m->base + cull, &cw, 4);
+    LOG("%s: widescreen camera for %s: aspect %.4f (%08x), culling %.4f, at +%#llx / +%#llx / +%#llx", m->name, WIDE_SITES[si].game, ratio, b,
+        (double)({ uint32_t c = hc << 16; float g; memcpy(&g, &c, 4); g; }), (unsigned long long)ld, (unsigned long long)def, (unsigned long long)cull);
+    return 4 + wide_hud_patch(m, ratio, WIDE_SITES[si].game);
+}
+// True aspect ratio (experimental, DM_WIDE_RENDER=1 with Widescreen): the game renders at the screen's own shape instead of 16:9 stretched to it, so pixels stay
+//   square. The graphics config's constructor (main+0x5e85e0, and an inlined copy at +0x5e86e0; the same in both games) packs each window size into one register:
+//   MOVZ X9, #1920 then MOVK X9, #1080, LSL #32 (TV mode) and MOVK X9, #1280, LSL #32 after the format word (handheld). The two widths become 1080 x the screen's aspect
+//   and 720 x it (even, at most 21.6:9); the heights stay, so the camera (wide_patch) sees as much more as the picture is wider. Render targets grow by the same factor
+//   (about 25 % at 20:9): the game's GPU memory areas are not resized, so this stays off by default until a phone has played with it (Legends: Arceus's 1440p could not start)
+static int wide_render_patch(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_WIDE_RENDER"), *a = getenv("DM_ASPECT"), *r = getenv("DM_WIDE_RATIO");
+    if (!e || atoi(e) <= 0 || !a || strcmp(a, "wide")) return 0;
+    int si = -1; for (unsigned i = 0; i < sizeof WIDE_SITES / sizeof *WIDE_SITES; i++) if (!strncasecmp(m->build_id, WIDE_SITES[i].build, 32)) si = (int)i;
+    double ratio = r ? atof(r) : 0; if (si < 0 || ratio < 16.0 / 9.0 + 0.01) return 0;
+    if (ratio > 2.4) ratio = 2.4;
+    uint32_t w1080 = (uint32_t)(1080 * ratio / 2 + 0.5) * 2, w720 = (uint32_t)(720 * ratio / 2 + 0.5) * 2;
+    static const struct { uint64_t off; uint32_t orig; int tv; } S[] = { { 0x5e860c, 0xd280f009u, 1 }, { 0x5e861c, 0xf2c0a009u, 0 }, { 0x5e871c, 0xd280f009u, 1 }, { 0x5e8734, 0xf2c0a009u, 0 } };
+    for (unsigned i = 0; i < 4; i++) { uint32_t w; memcpy(&w, m->base + S[i].off, 4);
+        if (S[i].off + 4 > m->text_end || w != S[i].orig || overlaps_rewrite(m, S[i].off, 4, p0, p1)) { LOG("[RED] %s: true aspect ratio not applied (%s: the graphics config code differs at +%#llx)", m->name, WIDE_SITES[si].game, (unsigned long long)S[i].off); return 0; } }
+    for (unsigned i = 0; i < 4; i++) { uint32_t w = S[i].tv ? 0xd2800000u | w1080 << 5 | 9 : 0xf2c00000u | w720 << 5 | 9; memcpy(m->base + S[i].off, &w, 4); }
+    LOG("%s: true aspect ratio for %s: the game renders %ux1080 in TV mode, %ux720 handheld (screen %.4f), instead of 16:9 stretched", m->name, WIDE_SITES[si].game, w1080, w720, ratio);
+    return 4;
+}
+// Resolution (DM_GALAR_RES, Graphics → Resolution: 720 / 1080 the game's own / 1440) for Pokémon Sword and Shield 1.3.2: the TV-mode window size the graphics
+//   config's constructor packs into one register, MOVZ X9, #1920 then MOVK X9, #1080, LSL #32 (main+0x5e860c / +0x5e8610, and the inlined copy at +0x5e871c / +0x5e8728;
+//   the same words in both games). Handheld mode keeps its own 1280x720. Checked word by word; with it the true aspect ratio (wide_render_patch) is left out (same words).
+//   1440p's render targets are 78 % larger: not yet run on a phone
+static int galar_res_patch(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_GALAR_RES"); int res = e ? atoi(e) : 0; if (res != 720 && res != 1440) return 0;
+    uint32_t W = res == 1440 ? 2560 : 1280, H = res == 1440 ? 1440 : 720;
+    static const struct { uint64_t off; uint32_t orig; int h; } S[] = { { 0x5e860c, 0xd280f009u, 0 }, { 0x5e8610, 0xf2c08709u, 1 }, { 0x5e871c, 0xd280f009u, 0 }, { 0x5e8728, 0xf2c08709u, 1 } };
+    for (unsigned i = 0; i < 4; i++) { uint32_t w; memcpy(&w, m->base + S[i].off, 4);
+        if (S[i].off + 4 > m->text_end || w != S[i].orig || overlaps_rewrite(m, S[i].off, 4, p0, p1)) { LOG("[RED] %s: resolution %dp not applied (the graphics config code differs at +%#llx)", m->name, res, (unsigned long long)S[i].off); return 0; } }
+    for (unsigned i = 0; i < 4; i++) { uint32_t w = (S[i].orig & ~(0xffffu << 5)) | (S[i].h ? H : W) << 5; memcpy(m->base + S[i].off, &w, 4); }
+    LOG("%s: resolution: the TV-mode window is %ux%u (DM_GALAR_RES; handheld keeps 1280x720)", m->name, W, H);
+    return 4;
 }
 // Widescreen for Legends: Arceus 1.1.1 (DM_ASPECT=wide, the menu's Picture → Widescreen; off by default): after Fl4sh's Ultrawide mods for 1.1.1, with this screen's own
 //   aspect (DM_WIDE_RATIO, its long side over its short, written by the app) instead of a fixed 21:9. The picture fills the screen (nvn_ovl.h) and the camera sees
@@ -546,6 +659,7 @@ static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
 //     x' = x + (w - w') / 2), so the HUD keeps its shape in the middle of the wider picture. Fl4sh's writes a fixed box for 1080p; this follows the box the game
 //     gives, at any resolution. That page is kept writable and executable (mod_pages_open), as the emulators run it.
 //   Every word is checked first (the cameras' 16:9, the LDP, the gap's zeros); a build or code that differs is left alone
+static int arc_wide_cull(module_t *m, uint64_t lim, int64_t p0, int64_t p1, double ratio);
 static int arc_wide(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_ASPECT"); if (!e || strcmp(e, "wide")) return 0;
     const char *r = getenv("DM_WIDE_RATIO"); double ratio = r ? atof(r) : 0;
@@ -576,7 +690,43 @@ static int arc_wide(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     memcpy(m->base + cave, c, sizeof c); mod_page_note(m, cave, sizeof c);
     uint32_t br = 0x14000000u | (uint32_t)(((int64_t)cave - (int64_t)hook) >> 2 & 0x3ffffff); memcpy(m->base + hook, &br, 4); mod_page_note(m, hook, 4);
     LOG("%s: widescreen for Legends: Arceus 1.1.1: camera aspect %.4f (%08x), HUD kept to 16:9 in the middle (x %.3f of the width)", m->name, ratio, bits, (double)k);
+    { const char *wc = getenv("DM_WIDE_CULL"); if (!(wc && !strcmp(wc, "0"))) return 8 + arc_wide_cull(m, lim, p0, p1, ratio); }   // (DM_WIDE_CULL=0: the game's culling as it is)
     return 8;
+}
+// Widescreen culling for Legends: Arceus 1.1.1 (with arc_wide; characters and objects popped in and out at the sides of the wider picture). Two parts, every word checked:
+//   - the two 16:9 defaults arc_wide's six cameras miss (the Main camera's ctor, main+0x2992488 / +0x299248c, and the camera registry entry's, +0x2a10de0 / +0x2a10de4:
+//     MOVK Xd, #0x8e39, LSL #32; MOVK Xd, #0x3fe3, LSL #48 = {fov, 1.7778f}) take the screen's aspect: a Main camera made by the fallback path (0x19b1b6c) is no longer 16:9;
+//   - the horizontal planes of both CPU culls (the render views' frustum, main+0x2abce48: FDIV S2, S0, S2 at +0x2abceb4; the terrain's, +0x246dc04: FDIV S2, S7, S1 at
+//     +0x246dc9c; perspective only, their orthographic branches come first) are widened by 1/k, k = (16/9) / aspect, in code added in the same gap of zeros as the
+//     HUD's (+0x38c8540..+0x38c8563): a little more is drawn off the sides, nothing visible pops. V16 is scratch in both functions
+static int arc_wide_cull(module_t *m, uint64_t lim, int64_t p0, int64_t p1, double ratio) {
+    static const uint64_t def[4] = { 0x2992488, 0x299248c, 0x2a10de0, 0x2a10de4 };
+    static const uint32_t defw[4] = { 0xf2d1c729u, 0xf2e7fc69u, 0xf2d1c728u, 0xf2e7fc68u };
+    const uint64_t s1 = 0x2abceb4, s2 = 0x246dc9c, cave = 0x38c8540; const uint32_t o1 = 0x1e221802u, o2 = 0x1e2118e2u;
+    int ok = cave + 0x24 <= lim;
+    for (int i = 0; ok && i < 4; i++) { uint32_t w; memcpy(&w, m->base + def[i], 4); ok = def[i] + 4 <= m->text_end && w == defw[i] && !overlaps_rewrite(m, def[i], 4, p0, p1); }
+    uint32_t w; if (ok) { memcpy(&w, m->base + s1, 4); ok = w == o1 && !overlaps_rewrite(m, s1, 4, p0, p1); }
+    if (ok) { memcpy(&w, m->base + s2, 4); ok = w == o2 && !overlaps_rewrite(m, s2, 4, p0, p1); }
+    for (int i = 0; ok && i < 9; i++) { memcpy(&w, m->base + cave + 4 * i, 4); ok = !w; }
+    if (!ok) { LOG("[RED] %s: widescreen culling not applied (Legends: Arceus 1.1.1's camera or culling code differs, or was rewritten)", m->name); return 0; }
+    float f = (float)ratio; uint32_t bits; memcpy(&bits, &f, 4); uint32_t lo = bits & 0xffff, hi = bits >> 16;
+    for (int i = 0; i < 4; i++) { uint32_t nw = (i & 1 ? 0xf2e00000u | hi << 5 : 0xf2c00000u | lo << 5) | (defw[i] & 31); memcpy(m->base + def[i], &nw, 4); mod_page_note(m, def[i], 4); }
+    float k = (float)(16.0 / 9.0 / ratio);
+    uint32_t c[9] = { 0x1c000110u,   // LDR S16, k             (+0x20)
+                      0x1e300842u,   // FMUL S2, S2, S16
+                      o1,            // FDIV S2, S0, S2        (the game's own)
+                      0x14000000u | (uint32_t)(((int64_t)s1 + 4 - (int64_t)(cave + 12)) >> 2 & 0x3ffffff),
+                      0x1c000090u,   // LDR S16, k             (+0x20 from cave, +0x10 from here)
+                      0x1e300821u,   // FMUL S1, S1, S16
+                      o2,            // FDIV S2, S7, S1        (the game's own)
+                      0x14000000u | (uint32_t)(((int64_t)s2 + 4 - (int64_t)(cave + 28)) >> 2 & 0x3ffffff),
+                      0 };
+    memcpy(&c[8], &k, 4);
+    memcpy(m->base + cave, c, sizeof c); mod_page_note(m, cave, sizeof c);
+    uint32_t b1 = 0x14000000u | (uint32_t)(((int64_t)cave - (int64_t)s1) >> 2 & 0x3ffffff), b2 = 0x14000000u | (uint32_t)(((int64_t)(cave + 16) - (int64_t)s2) >> 2 & 0x3ffffff);
+    memcpy(m->base + s1, &b1, 4); mod_page_note(m, s1, 4); memcpy(m->base + s2, &b2, 4); mod_page_note(m, s2, 4);
+    LOG("%s: widescreen culling: default cameras at the screen's aspect, both culls %.0f %% wider", m->name, 100.0 / k);
+    return 6;
 }
 // The render-target pool of Legends: Arceus 1.1.1, grown for a bigger render size (1440p, the screen's shape). The config builder (main+0x277d798) sets three NVN pools that
 //   graphics setup (main+0x29d6a64 → 0x2aa24c4 → the pool ctor main+0x2a8cf9c) creates: config+0x28 300 MB general, config+0x30 250 MB render targets (CPU no access,
@@ -675,6 +825,10 @@ void dm_arc_scale_set(float c) {
     uint32_t b; memcpy(&b, &c, 4); __atomic_store_n(g_arc_scale_lit, b, __ATOMIC_RELEASE);
     LOG("Legends: Arceus 3D render scale %.2f, set while playing", (double)c);
 }
+// The scale the 3D is drawn at, as far as the host sets it (the slider times the guard's step; the game's own resolution levels come on top): frame generation's
+//   work size follows it (nvn_vk.c fg_work_scale)
+// (Legends: Arceus's half of dm_scene_scale, hle_resscale.c: 0 where its scale patch is not in, which is every other game)
+float dm_arc_scene_scale(void) { if (!g_arc_scale_lit) return 0.0f; uint32_t b = __atomic_load_n(g_arc_scale_lit, __ATOMIC_ACQUIRE); float f; memcpy(&f, &b, 4); return f >= 0.3f && f <= 1.0f ? f : 1.0f; }
 static int arc_scale(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     static const struct { uint64_t off; uint32_t orig, call; } S[8] = {
         { 0x29b24b0, 0xf9401be0u, 0x943c5874u }, { 0x29b2504, 0xf9401be0u, 0x943c5862u }, { 0x29fb2d0, 0xf94033e0u, 0x943b34f2u }, { 0x29fb324, 0xf94033e0u, 0x943b34e0u },
@@ -697,12 +851,85 @@ static int arc_scale(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     LOG("%s: 3D render scale for Legends: Arceus 1.1.1: %.2f on the game's own (8 reads of 3DBufferWidthScale / HeightScale; the slider changes it live)", m->name, (double)c);
     return 9;
 }
+// Galar 1.3.2 (Shield; Sword's sites are 0x30 earlier, the same words): which game this main is, and its address shift from Shield's
+static int galar_shift(module_t *m, int64_t *d) {
+    if (!strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32)) { *d = 0; return 1; }
+    if (!strncasecmp(m->build_id, "a3b75bcd3311385aeed67fbeeb79cbb7", 32)) { *d = -0x30; return 2; }
+    return 0;
+}
+static int words_are(module_t *m, int64_t p0, int64_t p1, const uint64_t *off, const uint32_t *orig, int n) {
+    for (int i = 0; i < n; i++) { uint32_t w; if (off[i] + 4 > m->text_end) return 0; memcpy(&w, m->base + off[i], 4); if (w != orig[i] || overlaps_rewrite(m, off[i], 4, p0, p1)) return 0; }
+    return 1;
+}
+// Shadows (DM_SHADOWS, Graphics → Shadows) for Sword and Shield 1.3.2. The main scene's shadow target is 1024 x 1024 with 2 layers = 2 cascades (built in main+0xf679d0:
+//   MOV W8, #0x400 / MOV X8, #0x400 at +0xf67d38 / +0xf67d40; handheld copies it), and the fallback target a scene builds when it has none (+0xf56108 / +0xf56110).
+//   low: 512 x 512 (a quarter of the memory and fill); lowest: also only the near cascade (the cascade-level setter main+0xf52930 always stores 1: CMP W1, #1 / B.LT
+//   → MOV W1, #1 / NOP; far shadows go). The layer count stays 2 (a level-2 request must pass the setter's bounds check). Read once, when the targets are made
+static int galar_shadow_patch(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_SHADOWS"); int64_t d; const char *g;
+    if (!e || (strcmp(e, "low") && strcmp(e, "lowest"))) return 0;
+    int gi = galar_shift(m, &d); if (!gi) return 0; g = gi == 1 ? "Shield 1.3.2" : "Sword 1.3.2";
+    uint64_t so[4] = { 0xf67d38 + d, 0xf67d40 + d, 0xf56108 + d, 0xf56110 + d }; const uint32_t sw[4] = { 0x321603e8u, 0xd2808008u, 0x321603e8u, 0xd2808008u }, nw[4] = { 0x52804008u, 0xd2804008u, 0x52804008u, 0xd2804008u };
+    uint64_t co[2] = { 0xf52930 + d, 0xf52934 + d }; const uint32_t cw[2] = { 0x7100043fu, 0x5400010bu }, cn[2] = { 0x52800021u, 0xd503201fu };
+    int lowest = !strcmp(e, "lowest");
+    if (!words_are(m, p0, p1, so, sw, 4) || (lowest && !words_are(m, p0, p1, co, cw, 2))) { LOG("[RED] %s: shadows %s not applied (%s's shadow code differs)", m->name, e, g); return 0; }
+    for (int i = 0; i < 4; i++) memcpy(m->base + so[i], &nw[i], 4);
+    if (lowest) for (int i = 0; i < 2; i++) memcpy(m->base + co[i], &cn[i], 4);
+    LOG("%s: shadows %s for %s: shadow maps 512 x 512%s (DM_SHADOWS)", m->name, e, g, lowest ? ", the near cascade only" : "");
+    return lowest ? 6 : 4;
+}
+// Step pin (DM_STEP_PIN=1, a test switch for the stadium-crowd flicker at 60; off by default) for Sword and Shield 1.3.2. The game picks its step each frame from its
+//   frame-time table (main+0x203eeb0: 16.7, 33.3, 50, 66.7, 83.3 ms) by an index it derives from its own measured CPU / GPU time (main+0x5df360 / main+0x5df4b0,
+//   CSEL W2 ... at +0x5df460 and +0x5df508). Only entry 1 (+0x203eeb8) is the step word the host feeds at 60 (hle_nvn.c vstep_tick); the other entries are the
+//   game's own. Pinned, both selects give index 1 (MOV W2, #1): the step is always that word -- 33.3 ms at the game's own 30, the host's real step at 60. Same
+//   addresses in Sword and Shield (this part of the code is not shifted)
+static int galar_step_pin(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_STEP_PIN"); int64_t d;
+    if (!e || strcmp(e, "1")) return 0;
+    int gi = galar_shift(m, &d); if (!gi) return 0;
+    uint64_t so[2] = { 0x5df460, 0x5df508 }; const uint32_t ow[2] = { 0x1a89c2c2u, 0x1a8bc122u }, nw = 0x52800022u;
+    if (!words_are(m, p0, p1, so, ow, 2)) { LOG("[RED] %s: step pin not applied (the step code differs)", m->name); return 0; }
+    for (int i = 0; i < 2; i++) memcpy(m->base + so[i], &nw, 4);
+    LOG("%s: step pin for %s: the game's step is always the step word (DM_STEP_PIN, test switch)", m->name, gi == 1 ? "Shield 1.3.2" : "Sword 1.3.2");
+    return 2;
+}
+// Draw distance (DM_DRAW_DIST, percent 50-200, Graphics → Draw distance; from the next start) for Sword and Shield 1.3.2: the terrain detail layers (grass and the other
+//   instanced field objects, terrain_draw_setting's visible distance and fade bands, main+0xccb000) are shown by a squared camera distance computed once per layer in
+//   main+0xccec80 (FADDP V2.2S at +0xcced80, stored and reused by every comparison). That one is scaled by 1 / k^2 in a small cave at the end of the rewriter's code area:
+//   FADDP; LDR S31, =1/k^2; FMUL S2, S2, S31; B back (V31 is unused in that function). Trees, NPCs and Pokémon in the wild are RomFS data, not this
+static int galar_draw_patch(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_DRAW_DIST"); int pct = e ? atoi(e) : 100; int64_t d;
+    if (pct == 100 || pct < 50 || pct > 200) return 0;
+    int gi = galar_shift(m, &d); if (!gi) return 0;
+    uint64_t site = 0xcced80 + d; const uint32_t orig = 0x2e20d402u;
+    if (!words_are(m, p0, p1, &site, &orig, 1)) { LOG("[RED] %s: draw distance not applied (the terrain layer code differs)", m->name); return 0; }
+    // the cave: the zero tail of the rewriter's code area (mapped read + execute with it), 64 bytes checked free
+    int64_t end = m->patch_off < 0 ? p1 : (int64_t)m->size; static const uint8_t z[64];
+    int64_t cave = end - 32;
+    if (end - 64 < p0 || memcmp(m->base + end - 64, z, 64) || llabs(cave - (int64_t)site) >= (1ll << 27)) { LOG("[RED] %s: draw distance not applied (no free code space in reach)", m->name); return 0; }
+    float k = pct / 100.0f, lit = 1.0f / (k * k); uint32_t c[5];
+    c[0] = orig;                                    // FADDP V2.2S, V0.2S, V0.2S
+    c[1] = 0x1c00007fu;                             // LDR S31, [PC, #12]
+    c[2] = 0x1e3f0842u;                             // FMUL S2, S2, S31
+    c[3] = 0x14000000u | (uint32_t)((((int64_t)site + 4) - (cave + 12)) >> 2 & 0x3ffffff);   // B site + 4
+    memcpy(&c[4], &lit, 4);
+    memcpy(m->base + cave, c, sizeof c);
+    uint32_t br = 0x14000000u | (uint32_t)((cave - (int64_t)site) >> 2 & 0x3ffffff); memcpy(m->base + site, &br, 4);
+    __builtin___clear_cache((char *)(m->base + cave), (char *)(m->base + cave + 20));
+    LOG("%s: draw distance %d %% for %s: grass and field detail layers (DM_DRAW_DIST)", m->name, pct, gi == 1 ? "Shield 1.3.2" : "Sword 1.3.2");
+    return 2;
+}
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
     (void)modded;
     if (strcmp(m->name, "main")) return 0;
     int n = bmod_apply(m, lim, p0, p1);
+    if (pfps_build(m->build_id)) return n + paldea_fps_patch(m, lim, p0, p1);   // (Scarlet / Violet 4.0.0: none of the Sword / Shield patches below are its)
     if (!strncasecmp(m->build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) return n + arc_wide(m, lim, p0, p1) + arc_res(m, p0, p1) + arc_wide_render(m, p0, p1) + arc_pool_retry(m, lim, p0, p1) + arc_scale(m, lim, p0, p1);   // (Legends: Arceus 1.1.1: its 60 is hle_nvn.c arc_step, not the Sword / Shield patch)
-    return n + (g_bmod_fps ? 0 : fps_patch(m, lim, p0, p1));
+    n += wide_patch(m, lim, p0, p1);
+    n += galar_shadow_patch(m, p0, p1) + galar_draw_patch(m, p0, p1) + galar_step_pin(m, p0, p1);
+    n += galar_res_patch(m, p0, p1);   // (before wide_render_patch: with a resolution chosen, that one finds its words changed and stays out)
+    n += wide_render_patch(m, p0, p1);
+    return n + fps_patch(m, lim, p0, p1);
 }
 // Built-in: DM_FPS_TARGET=60..120 (opt-in, the in-game menu; experimental) for Pokémon Shield and Sword 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps),
 // becomes 1 (in the game's present-interval setter: if the interval asked for differs from the window's, MOV W1, W21 then a call through NVN's set-present-interval
@@ -718,6 +945,49 @@ static const struct { const char *build; uint64_t itv, dt; const char *game; } F
 //   dm_fps_live (30 or 60), which the in-game menu changes while playing (android_main.c nativeSetting): at 30 every frame is held 2 slots and the game told
 //   interval 2, as the game itself does at 30 (hle_nvn.c vstep_tick, reported_hold); at 60 the hold is 1, 2 when frames run late. 90 / 120 (env.txt) stay fixed
 int dm_fps_live;   // 0: not live (the game's own 30, or a fixed 90 / 120)
+// The game's own 30 where the patch makes the stadium crowd flicker (DM_NATIVE_START, on unless "0"). With the live frame rate the patch is not written at load:
+//   the title screen and the opening run exactly as at 30 on the Switch (the game's own present interval 2 and its own step). The crowd's flipbook (the title
+//   screen's stadium, and models ob0041..ob0044 stadiumcrowda..d in the opening after the name entry) flickered under the patch even at 30, each frame held 2 slots
+//   of 60 Hz by the host with the step fed by it, and not at the game's own 30 (v0.59, which left the patch out at 30). The patch goes in when play reaches a field
+//   area (a zone's scripts load, bin/script/amx/z_*.amx) or the menu asks for 60, comes out again while a stadium crowd is loaded (DM_CROWD_30, on unless "0"), and
+//   goes back in at the next field area. dm_fps_tick writes the two words on the present thread: the code word through a moment of read + write + execute on its
+//   one page (the code area is sealed), the step word in data; while the patch is out the host feeds the step no more (dm_step_word NULL: hle_nvn.c vstep_on)
+static struct { uint8_t *itv, *dt; uint32_t wi, wd, owi, owd; int fps, want, on, patched, broken; } g_fp;   // on: the patch is handled here; want: the live rate to go back to
+static int g_fp_native = 1;   // the game's own 30 is asked for: from the start until a field area, and while a stadium crowd is loaded
+void dm_fps_scene_file(const char *path) {   // hle_fs.c h_fs_OpenFile
+    if (!path || !g_fp.on) return;
+    int crowd = strstr(path, "_stadiumcrowd") != NULL, zone = !crowd && strstr(path, "/script/amx/z_") != NULL;
+    if (!crowd && !zone) return;
+    static int c30 = -1; if (c30 < 0) { const char *e = getenv("DM_CROWD_30"); c30 = !(e && !strcmp(e, "0")); }
+    if (crowd && c30 && !__atomic_exchange_n(&g_fp_native, 1, __ATOMIC_RELAXED)) LOG("frame rate: the stadium crowd is loading (%s): the game's own 30 until a field area", path);
+    if (zone && __atomic_exchange_n(&g_fp_native, 0, __ATOMIC_RELAXED)) LOG("frame rate: a field area loads (%s)", path);
+}
+static int fp_write(int patched) {
+    long pg = sysconf(_SC_PAGESIZE); if (pg <= 0) pg = 4096;
+    uint8_t *page = (uint8_t *)((uintptr_t)g_fp.itv & ~(uintptr_t)(pg - 1));
+    if (mprotect(page, (size_t)pg, PROT_READ | PROT_WRITE | PROT_EXEC)) {   // (executable throughout: another thread may be running code on this page)
+        g_fp.broken = 1; LOG("[RED] frame rate: the 60 fps patch cannot be %s (mprotect: %s): it stays as it is for this run", patched ? "written" : "taken out", strerror(errno)); return 0; }
+    __atomic_store_n((uint32_t *)g_fp.itv, patched ? g_fp.wi : g_fp.owi, __ATOMIC_RELEASE);
+    mprotect(page, (size_t)pg, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)g_fp.itv, (char *)g_fp.itv + 4);
+    if (!patched) dm_step_word = NULL;   // (the host stops feeding the step before the game's own value goes back)
+    dm_guest_write_prepare(g_fp.dt, 4); __atomic_store_n((uint32_t *)g_fp.dt, patched ? g_fp.wd : g_fp.owd, __ATOMIC_RELAXED);
+    if (patched) { dm_step_hz = g_fp.fps; dm_step_word = g_fp.dt; }
+    g_fp.patched = patched; return 1;
+}
+// Each present (hle_nvn.c, the present thread, before the step is decided): the patch in or out as asked
+void dm_fps_tick(void) {
+    if (!g_fp.on || g_fp.broken) return;
+    int live = __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED), nat = __atomic_load_n(&g_fp_native, __ATOMIC_RELAXED);
+    if (!g_fp.patched) {
+        if (live == 60) { nat = 0; __atomic_store_n(&g_fp_native, 0, __ATOMIC_RELAXED); g_fp.want = 60; }   // (the menu asked for 60 meanwhile: its choice)
+        if (!nat && fp_write(1)) { __atomic_store_n(&dm_fps_live, g_fp.want, __ATOMIC_RELAXED);
+            LOG("frame rate: the 60 fps patch is in, live frame rate %d (the menu switches 30 / 60 at once)", g_fp.want); }
+    } else if (nat) {
+        g_fp.want = live == 60 ? 60 : 30;
+        if (fp_write(0)) { __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED); LOG("frame rate: the 60 fps patch is out: the game's own 30 (then %d again)", g_fp.want); }
+    }
+}
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_FPS_TARGET"), *lv = getenv("DM_FPS_LIVE"); int live = !(lv && !strcmp(lv, "0"));
     int want = e && *e ? atoi(e) : 0;
@@ -733,6 +1003,14 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     uint32_t wi, wd; memcpy(&wi, m->base + itv, 4); memcpy(&wd, m->base + dt, 4);
     if ((wi != 0x2a1503e1u && wi != 0x52800041u) || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
+    { const char *ns = getenv("DM_NATIVE_START");
+      if (fps == 60 && live && !(ns && !strcmp(ns, "0"))) {   // the game's own 30 until a field area or 60 from the menu (dm_fps_tick)
+        g_fp.itv = m->base + itv; g_fp.dt = m->base + dt; g_fp.wi = wi; g_fp.wd = wd; g_fp.fps = fps; g_fp.want = want == 60 ? 60 : 30; g_fp.on = 1;
+        memcpy(&g_fp.owi, m->base + itv, 4); g_fp.owd = 33333334u;   // (the game's own words: the patch can come out again)
+        __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED);
+        LOG("%s: 60 fps patch for %s ready, not written yet: the game's own 30 until play reaches a field area or the menu asks for 60, then %d (live frame rate)",
+            m->name, FPS_SITES[si].game, g_fp.want);
+        return 2; } }
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;
     if (fps == 60 && live) __atomic_store_n(&dm_fps_live, want == 60 ? 60 : 30, __ATOMIC_RELAXED);
@@ -835,9 +1113,28 @@ void run_module_inits(void) {
 //   4x4 column-major (main+0x29fb138: the scene's constant buffer takes them from there). Each read through process_vm_readv: a pointer that is not (yet) valid
 //   while a scene loads fails the read instead of faulting. 1: vp = projection x view
 static int peek(uint64_t a, void *o, size_t n) { struct iovec l = { o, n }, r = { (void *)(uintptr_t)a, n }; return a && process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t)n; }
+// Sword and Shield 1.3.2 (the same data and struct offsets in both): the graphics system S = *(main+0x26365b8) (hle_resscale's global), its render-pipeline holder
+//   *(S+0x88), the render manager *(holder+0x58), the main 3D render view *(manager+0x160) (the game's own GetMainRenderView, Shield main+0xf67310 / Sword +0xf672e0),
+//   and that view's camera object V = *(view+0x128), which main+0x607670 (the Widescreen patch's function) rebuilds each update from the active camera: view at
+//   V+0x60, projection +0xa0, view-projection +0xe0, 4x4 column-major, GL form. A perspective camera has projection col2.w = -1 and col3.w = 0 (an orthographic one
+//   is skipped), the view's bottom row (0,0,0,1)
+static int galar_cam_viewproj(uint8_t *base, float vp[16]) {
+    uint64_t S, X, M, RV, V; float m[48];
+    if (!peek((uint64_t)(uintptr_t)(base + 0x26365b8), &S, 8) || !peek(S + 0x88, &X, 8) || !peek(X + 0x58, &M, 8) || !peek(M + 0x160, &RV, 8) || !peek(RV + 0x128, &V, 8)) return 0;
+    if (!peek(V + 0x60, m, sizeof m)) return 0;   // view, projection, view-projection
+    for (int i = 0; i < 48; i++) if (!__builtin_isfinite(m[i])) return 0;
+    if (m[16 + 11] != -1.0f || m[16 + 15] != 0.0f) return 0;                                  // perspective only
+    if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f) return 0;            // a rigid view
+    for (int c = 0; c < 3; c++) { float l = m[c * 4] * m[c * 4] + m[c * 4 + 1] * m[c * 4 + 1] + m[c * 4 + 2] * m[c * 4 + 2]; if (l < 0.998f || l > 1.002f) return 0; }
+    memcpy(vp, m + 32, 64);
+    return 1;
+}
 int dm_cam_viewproj(float vp[16]) {
-    static uint8_t *base; static int tried;
-    if (!tried) { tried = 1; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !strncasecmp(g_mod[i].build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) base = g_mod[i].base; }
+    static uint8_t *base, *galar; static int tried;
+    if (!tried) { tried = 1; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
+        if (!strncasecmp(g_mod[i].build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) base = g_mod[i].base;
+        else if (!strncasecmp(g_mod[i].build_id, "a16802625e7826bf83b6f9708e475b91", 32) || !strncasecmp(g_mod[i].build_id, "a3b75bcd3311385aeed67fbeeb79cbb7", 32)) galar = g_mod[i].base; } }
+    if (galar) return galar_cam_viewproj(galar, vp);
     if (!base) return 0;
     const uint64_t key = 0x6723799257d05608ull; uint64_t R, n, bk, node;
     if (!peek((uint64_t)(uintptr_t)(base + 0x42ef5a8), &R, 8) || !peek(R + 0xa0, &n, 8) || !n || n > (1u << 20)) return 0;

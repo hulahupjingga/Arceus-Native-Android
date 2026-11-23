@@ -137,8 +137,8 @@ void hid_keys_init(void) {
 }
 
 // The controller is chosen once, by the mode at start, and stays connected when the mode changes. Graphics Auto drops from TV to handheld mode while the phone is hot
-//   (android_main.c graphics_auto): the controller then moved from No. 1 to the handheld one, which the game, already reading No. 1, never took up. Every button and the
-//   stick went dead mid-game (the touch camera kept working: it has its own path) until a restart (Arceus-Native-Android #49, Adreno 725). On a Switch a Pro
+//   (android_main.c graphics_auto): the controller then moved from No. 1 to the handheld one, which the game, already reading No. 1, never took up, so every button
+//   and the stick went dead mid-game until a restart (seen in Legends: Arceus, Arceus-Native-Android #49; Sword / Shield share this code). On a Switch a Pro
 //   Controller also stays controller No. 1 when the console leaves its dock
 static uint32_t connected_id(void) {
     static _Atomic int64_t id = -1; int64_t v = atomic_load(&id);

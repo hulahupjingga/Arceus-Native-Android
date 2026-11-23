@@ -13,6 +13,7 @@ typedef struct {
     uint8_t kind;                     // SPV_RES_*
     uint8_t dim, arrayed, ms, depth;  // images: SPV_DIM_*, arrayed, multisampled, depth comparison
     uint8_t sclass;                   // images: sampled component class 0 float / 1 uint / 2 sint
+    uint8_t ifmt;                     // images: the SPIR-V Image Format the shader declares (0 Unknown; SPV_IMGFMT_*), as loaded
 } spv_res;
 typedef struct { uint32_t location; uint8_t sclass, ncomp; } spv_input;   // vertex stage inputs: location, 0 float / 1 uint / 2 sint, component count
 
@@ -28,9 +29,14 @@ uint32_t *spv_drop_inputs(const uint32_t *code, size_t words, uint64_t drop, siz
 // A copy in which every user vector output of the entry point starts at the value an unwritten Maxwell attribute reads, (0, 0, 0, 1): vertex / tessellation evaluation
 // shaders that write only some components (or none) of an output the next stage reads (dmsh_build.py vs_init / vs_pad on the Metal side). NULL if nothing to do
 uint32_t *spv_init_outputs(const uint32_t *code, size_t words, size_t *out_words);
+enum { PROBE_SAMPLES = 1, PROBE_INPUTS = 2, PROBE_DIV = 4, PROBE_OUTPUT = 8, PROBE_MUL = 16, PROBE_ADD = 32, PROBE_FMA = 64, NAN_FIX_OUT = 128, NAN_FIX_TEX = 256 };
+uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);   // diagnostic clamps in fragment shaders (DM_VK_PROBE)
 uint32_t *spv_swap_out01(const uint32_t *code, size_t words, size_t *out_words);   // fragment outputs at locations 0 and 1 swapped (dual-source blending emulated)
 // Drops capabilities / extensions / execution modes a shader declares but never uses (Float64, fragment shader interlock), in place; returns the new length in words
 size_t spv_strip_unused(uint32_t *code, size_t words);
+size_t spv_strip_clipcull(uint32_t *code, size_t words);   // the per-vertex block's unused ClipDistance / CullDistance members (in place, the new word count)
+// textureQueryLod's level component as clamp (LOD, 0, levels - 1): Arm's own driver gives floor (LOD) there (dEQP texturequerylod). A copy; NULL when the module has none
+uint32_t *spv_query_lod(const uint32_t *code, size_t words, size_t *out_words);
 // A SPIR-V 1.0 copy for Vulkan 1.0 drivers (unused subgroup capabilities dropped, extensions declared); NULL if it needs more than 1.0 or is 1.0 already
 uint32_t *spv_to_10(const uint32_t *code, size_t words, size_t *out_words);
 // Devices without draw parameters: DrawParameters dropped; BaseVertex / BaseInstance / DrawIndex read from push constants at SPV_DRAWP_PC_OFFSET (*mode 1) or as 0 in a
@@ -59,6 +65,16 @@ uint32_t *spv_tf_variant(const uint32_t *code, size_t words, const int tf[4][2],
 uint32_t *spv_tf_points_variant(const uint32_t *code, size_t words, const int tf[4][2], uint32_t w_px, size_t *out_words);   // the point route for drivers without vertex stores
 // A copy that declares StorageImageWriteWithoutFormat / StorageImageReadWithoutFormat where the shader writes / reads a storage image of format Unknown without them. NULL if none is missing
 uint32_t *spv_image_caps(const uint32_t *code, size_t words, size_t *out_words);
+// Image declarations of SPIR-V ImageFormat from changed to to, in place (R11fG11fB10f 8 → Rgba16f 2: DM_VK_B10_AS_RGBA16's stand-in); texel buffers (Dim Buffer) are
+//   left as they are. Returns how many changed
+enum { SPV_IMGFMT_RGBA16F = 2, SPV_IMGFMT_R11G11B10F = 8 };
+int spv_image_format_swap(uint32_t *code, size_t words, uint32_t from, uint32_t to);
+// DM_VK_B10_AS_RGBA16's stand-in written by a shader, values made what R11G11B10F stores (negative and -inf 0, NaN and +inf kept, rounded to the channel's mantissa
+//   ties to even, past the largest finite value that value), in integer arithmetic. spv_b10_outputs: the fragment outputs at the locations in mask (alpha as written),
+//   before every return of the entry point; spv_b10_image_writes: every write through a storage image declared R11fG11fB10f (alpha 1; *n_left: writes with fewer than
+//   3 components, left alone). Both NULL when there is nothing to patch
+uint32_t *spv_b10_outputs(const uint32_t *code, size_t words, uint32_t mask, size_t *out_words);
+uint32_t *spv_b10_image_writes(const uint32_t *code, size_t words, size_t *out_words, int *n_left);
 // A copy whose 2D / 2D-array texture gathers have their coordinate nudged by 1/512 of a texel (the host picks Maxwell's 2x2 block on a texel centre: Adreno). NULL if none
 uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words);
 // A copy whose entry points ask for SignedZeroInfNanPreserve on 32-bit floats (SPV_KHR_float_controls): drivers keep infinities and NaN as they are. NULL if not patched
@@ -69,6 +85,12 @@ uint32_t *spv_nan_minmax(const uint32_t *code, size_t words, size_t *out_words);
 uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words);
 // A copy in which every 32-bit float multiply (OpFMul, GLSL.std.450 Fma) gives 0 when an operand is 0, as Maxwell's FMZ does (0 x inf / NaN = 0); NULL when it has none
 uint32_t *spv_fmz(const uint32_t *code, size_t words, size_t *out_words);
+// A copy in which scalar 32-bit Log2 / Exp2 / InverseSqrt / Sqrt and float-to-integer conversions give Maxwell's answers where SPIR-V's are undefined (log2 (0) = -inf,
+// exp2 below 2^-126 = 0, inversesqrt (0) = +inf, a negative root NaN, F2I clamped with NaN 0), the classes chosen by mask. NULL if there is none
+enum { EXACT_LOG2 = 1, EXACT_EXP2 = 2, EXACT_RSQ = 4, EXACT_SQRT = 8, EXACT_FTOI = 16, EXACT_ALL = 31 };
+uint32_t *spv_exact_math(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);
+// A copy in which every Function variable without an initializer starts at zero (the translator's registers; Mesa turns undefined values into 0). NULL if there is none
+uint32_t *spv_init_locals(const uint32_t *code, size_t words, size_t *out_words);
 // A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
 // NULL if there is none
 uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);

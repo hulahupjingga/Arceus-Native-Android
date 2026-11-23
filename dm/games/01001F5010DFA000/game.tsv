@@ -76,10 +76,6 @@ android_op_mode	handheld
 # heavier than the Sword / Shield the Auto tiers were set on (about 20 fps docked on a Galaxy S25+): Auto picks one tier lower (GameSettings.profile)
 android_heavy	on
 
-# ---- Set up from an installed app (Android) ----
-# The Legends: Arceus app built on a PC (Mac pipeline) holds the game in its APKs (assets/game: RomFS and the code this repository's patch_nso.py rewrote): the setup screen
-# offers it in place of a dump (setup_game.py --installed); only the shaders are made again (that app's pack is another translation chain)
-setup_from_app	com.nxnative.arceus
 
 # ---- No reflections (Android: the in-game menu, on by default; android_main.c flat_normals, dm/android/tools/flat_normals.py) ----
 # On this engine the fine lighting detail of the field's ground and tree bark shows purple in shadowed places. The setup makes the normal maps below flat in the
@@ -87,3 +83,12 @@ setup_from_app	com.nxnative.arceus
 # every ground material (ha_*) but ice, and the bark of these trees; grass, flowers, shrubs and leaves keep their detail
 flat_normals	bin/archive/field/terrain
 flat_normals_names	ha_*_nrm,!ha_area05_ice_nrm,area00_glass01_nrm,plants_area01_tree01_02_nrm,plants_area01_tree02_02_nrm,plants_area02_tree01_02_nrm,plants_area02_tree03_nrm,plants_area02_tree04_nrm,plants_area02_tree05_nrm,plants_area02_tree06_02_nrm,plants_area02_tree07_nrm,plants_area02_tree10_01_nrm,plants_area02_tree11_01_nrm,plants_area03_tree02_nrm,plants_area03_tree03_nrm,plants_area03_tree05_nrm,plants_area03_tree06_nrm,plants_area04_tree01_02_nrm,plants_tree01_02_nrm,plants_tree02_nrm,plants_tree04_02_nrm
+
+# ---- Port (engine unification: docs/ENGINE_UNIFY.md) ----
+# the released app (Arceus Native); the shared save folder Documents/NXNative/<title id>/save, as its releases made it
+port	arceus
+docs_dir	NXNative
+# where Arceus Native's engine differed from Galar Native's when the two were merged (dm/games/game.py ENGINE_QUIRKS): kept as its releases ran
+engine_quirks	qc11_no_eds gpu_time_auto_only frame_hold_off async_pso_off framegen_game_rate nvn_async_never driver_selftests
+# the shader translation chain generation (dm/gfx/chains/chain_tree.py): the translator its releases ship, so players' installed shader packs keep loading
+xlate_chain	pre-fmz

@@ -155,7 +155,7 @@ static int fg_setup(fgen *g, VkDevice dev, VkPhysicalDevice pd, VkFormat fmt, ui
     g->lw[0] = (w + 3) / 4; g->lh[0] = (h + 3) / 4;
     for (int l = 1; l < FG_LEVELS; l++) { g->lw[l] = (g->lw[l - 1] + 1) / 2; g->lh[l] = (g->lh[l - 1] + 1) / 2; }
     const VkImageUsageFlags smp = VK_IMAGE_USAGE_SAMPLED_BIT, att = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    int ok = fg_img_make(g, &g->m, fmt, w, h, att | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, g->rp[2]) && fg_img_make(g, &g->st, VK_FORMAT_R16G16B16A16_SFLOAT, 1, 1, att, g->rp[1]);
+    int ok = fg_img_make(g, &g->m, fmt, w, h, att | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, g->rp[2]) && fg_img_make(g, &g->st, VK_FORMAT_R16G16B16A16_SFLOAT, 1, 1, att | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, g->rp[1]);   // (st copyable: tests/t_fgen_vk reads it back)
     for (int p = 0; p < 2 && ok; p++) { ok = fg_img_make(g, &g->c[p], fmt, w, h, smp | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_NULL_HANDLE);
         for (int l = 0; l < FG_LEVELS && ok; l++) ok = fg_img_make(g, &g->y[p][l], VK_FORMAT_R8_UNORM, g->lw[l], g->lh[l], att, g->rp[0]); }
     for (int l = 0; l < FG_LEVELS && ok; l++) ok = fg_img_make(g, &g->f[l], VK_FORMAT_R16G16B16A16_SFLOAT, g->lw[l], g->lh[l], att, g->rp[1]);
@@ -241,7 +241,6 @@ static void fg_depth_ingest(fgen *g, VkCommandBuffer cb, int p, int have) {
     if (!have || !g->zsrc || !g->z[p].img) return;
     fg_pass(g, cb, 3, &g->z[p], g->w, g->h, 4, g->ds_z, g->z_far1 ? 1.0f : 0.0f, 0, 0, 0); g->z_ok[p] = 1;
 }
-#endif
 // Camera guidance for the next fg_generate(g, cb, p): m = the game's view-projection of frame p ^ 1 times the inverse of frame p's (column-major, the game's clip
 //   space), depth01: the game's depth runs 0..1 (else GL's -1..1). Used only with frame p's nearness (depth guidance); m NULL: off. The flow search then also
 //   starts from the camera's motion where that matches the pictures better, so a fast turn is found beyond the search's own reach
@@ -250,6 +249,7 @@ static void fg_camera(fgen *g, int p, const float *m, int depth01) {
     g->camb[0] = on ? 1.0f : 0.0f; g->camb[1] = depth01 ? 1.0f : 0.0f; g->camb[2] = g->z_far1 ? 1.0f : 0.0f; g->camb[3] = 0;
     if (on) memcpy(g->camm, m, sizeof g->camm); else memset(g->camm, 0, sizeof g->camm);
 }
+#endif   // FG_PLAN_ONLY (fg_camera uses the Vulkan part's fgen: inside it, so tests/t_fgen.c builds again)
 // ---------- When to generate, and when the real frame goes out (pure: tests/t_fgen.c) ----------
 typedef struct { uint64_t last, cost_sum, cost_n, cost_max, win; int over; } fg_plan;
 // A real frame arrived at now (ns); period: the game's frame time. 1: make an in-between picture (the frame before came about one period ago: after a pause, a
