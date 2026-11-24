@@ -245,7 +245,7 @@ void dm_host_helper_qos(qos_class_t q) { if (g_qos_map) pthread_set_qos_class_se
 static __thread uintptr_t g_gate_host_sp;
 #define GATE_HOST_SPAN (768u << 10)   // of the 1 MB pthread stack: what thread_main and the frames above it leave free, with room to spare
 uintptr_t gate_host_stack(uintptr_t sp) {
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_GATE_HOST_STACK"); on = !(e && !strcmp(e, "0")); }
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_GATE_HOST_STACK"); on = e && !strcmp(e, "1"); }
     uintptr_t h = g_gate_host_sp;
     if (!on || !h) return 0;
     if (sp <= h && sp > h - GATE_HOST_SPAN) return 0;   // already on it: a gate inside guest code that host code called
