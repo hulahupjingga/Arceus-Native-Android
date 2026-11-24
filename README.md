@@ -6,7 +6,7 @@
 > **Early release. v0.96 is a pre-release**, so far played only briefly on one test phone (Snapdragon 8 Elite, Adreno 830). Reports with logs help most ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 > [!NOTE]
-> **No game files, code, shaders or keys are included.** You need your own copy of the game.
+> **No game files, code, shaders or keys are included.** You need the ExeFS and RomFS folders extracted from your own copy of the game, with update 1.1.1 applied.
 
 > [!IMPORTANT]
 > **AI disclaimer.** Much of Arceus Native's code, including the engine, the graphics fixes and the reverse engineering of the game, was written with the help of AI coding tools. It's tested on real phones before each release, but it's an unofficial fan project and may have bugs that hurt performance, show graphics glitches or crash the game. Back up your saves, and report problems with a log ([CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -15,7 +15,7 @@
 
 1. Install `ArceusNative.apk` from [Releases](https://github.com/simipoB/Arceus-Native-Android/releases) (or [build it](docs/BUILDING.md)).
 2. Set up the game, one of two ways:
-   - **From your own dump:** choose your game files (`.nsp` / `.xci`, base game and update 1.1.1) and your console's `prod.keys`. Keys stay on the phone.
+   - **From your own dump:** choose the **ExeFS** and **RomFS** folders you extracted from your game with **update 1.1.1 applied** (the folder holding both, or each in turn). Setup copies them into the app; with too little room it offers to move them instead. No keys and no `.nsp` / `.xci` any more: v0.98 deletes keys an older version stored.
    - **From the older Arceus app:** if the earlier Arceus port is installed, tap **Set up from the installed app**. No dump or keys needed, and its save comes along.
 3. When setup is done, the app opens straight into the game.
 
