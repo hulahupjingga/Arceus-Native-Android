@@ -6,7 +6,7 @@
 > **Early release. v0.96 is a pre-release**, so far played only briefly on one test phone (Snapdragon 8 Elite, Adreno 830). Reports with logs help most ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 > [!NOTE]
-> **No game files, code, shaders or keys are included.** You need your own copy of the game.
+> **No game files, code, shaders or keys are included.** You need the ExeFS and RomFS folders extracted from your own copy of the game, with update 1.1.1 applied.
 
 > [!IMPORTANT]
 > **AI disclaimer.** Much of Arceus Native's code, including the engine, the graphics fixes and the reverse engineering of the game, was written with the help of AI coding tools. It's tested on real phones before each release, but it's an unofficial fan project and may have bugs that hurt performance, show graphics glitches or crash the game. Back up your saves, and report problems with a log ([CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -15,19 +15,12 @@
 
 1. Install `ArceusNative.apk` from [Releases](https://github.com/simipoB/Arceus-Native-Android/releases) (or [build it](docs/BUILDING.md)).
 2. Set up the game, one of two ways:
-   - **From your own dump:** choose your game files (`.nsp` / `.xci`, base game and update 1.1.1) and your console's `prod.keys`. Keys stay on the phone.
+   - **From your own dump:** choose the **ExeFS** and **RomFS** folders you extracted from your game with **update 1.1.1 applied** (the folder holding both, or each in turn). Setup copies them into the app; with too little room it offers to move them instead. No keys and no `.nsp` / `.xci` any more: v0.98 deletes keys an older version stored.
    - **From the older Arceus app:** if the earlier Arceus port is installed, tap **Set up from the installed app**. No dump or keys needed, and its save comes along.
 3. When setup is done, the app opens straight into the game.
 
 - Official releases are signed with `SHA-256: a5f49b44b6181758d82504f3beb0851c92093f454c792b49688728130673a070`. Any other build says "Unofficial build". An official update installs over the last one and keeps your setup and saves.
 - **Updates:** ☰ → About → Updates checks this repository's releases for a newer full release (never a pre-release) and installs it after you confirm. It only installs the official build signed with the key above. Turn off **Look for updates when the app starts** to stop the check.
-
-### Your game files
-
-- On your own console or PC, dump the game's **ExeFS** and **RomFS** with **update 1.3.2 applied** (the update merged into the base game). Dump tools and emulators that have "dump ExeFS / RomFS" make a folder holding `exefs` and `romfs`: choose that folder once. Copy it to the phone's storage first.
-- The ExeFS folder holds `main`, `main.npdm`, `rtld`, `sdk` and `subsdk*`. Setup reads its version from `main`: without the update you'll be told to dump again with 1.3.2.
-- **DLC:** dump each DLC's RomFS too. Its folder name must carry the DLC's title ID (Sword `0100ABF008969001` / `…9002`, Shield `01008DB008C2D001` / `…D002`) or its number (`1`, `2`) so setup knows which DLC it is.
-- No keys and no `.nsp` / `.xci`: the app doesn't use them any more, and deletes keys an older version stored. Setup needs room for a copy of the files; if there isn't any, it offers to move them into the app instead.
 
 ## Requirements
 
