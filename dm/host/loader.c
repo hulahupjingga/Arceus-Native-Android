@@ -129,6 +129,13 @@ module_t *module_of(const void *p) {
     }
     return NULL;
 }
+// For callers without dm.h (android_main.c's load profile, fable-loads.md I3 / I4): an address as "<module>+0x<offset>" (1) or not in a game module (0), and
+//   module i's name and build id (0 past the last)
+int dm_addr_module(const void *p, char *out, size_t n) {
+    module_t *m = module_of(p); if (!m) return 0;
+    snprintf(out, n, "%s+0x%llx", m->name, (unsigned long long)((const uint8_t *)p - m->base)); return 1;
+}
+int dm_module_info(int i, const char **name, const char **build) { if (i < 0 || i >= g_nmod) return 0; *name = g_mod[i].name; *build = g_mod[i].build_id; return 1; }
 
 // SDK major version, from the version string the SDK's libraries keep in the sdk module's read-only data ("NintendoSDK_nnSdk-10_4_0"; SDK 12 spells it NintendoSdk_).
 // Behaviour that follows the SDK version is decided by it (the NVN API version, the shared-font layout), not by the game profile. 0 = no sdk module or no version string
@@ -810,6 +817,27 @@ static int arc_pool_retry(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     LOG("%s: pool lookup retry (crash #3): a failed lookup at +%#llx flushes and looks again, up to 4 times (code at +%#llx)", m->name, (unsigned long long)site, (unsigned long long)cave);
     return 2;
 }
+// Crash leaving Jubilife Village (Legends: Arceus 1.1.1, pc main+0x2b94314; on in this test build, DM_ARC_HEAP_KEEP=0 leaves it out). A VFX resource's destructor
+//   (main+0x2b94288, vtable main+0x4195290), run from a deferred-destroy queue a few frames late, frees through its allocator [this+0x60]: a gfl forwarding heap
+//   (0x70 bytes, vtable main+0x40c2e00, ctor main+0x84b1c0, upstream at +0x38). Those heaps live in a 29-slot table (0x28 bytes a slot: +0x10 the heap, +0x18 the
+//   upstream, +0x20 the 0x70 block it sits in, +0x28 its size; filled at main+0x16d126c). When the area ends, main+0x16d1530 runs each heap's destructor
+//   (+0x16d158c: puts its own vtable back, finalizes the lock at +0x24, keeps everything else) and then gives the 0x70 block back to the upstream at once
+//   (+0x16d1628, or deferred +0x16d1654) without draining that queue: the late free then reads a vtable the upstream's free list has overwritten.
+//   +0x16d15c0 (ldr x8, [x25], the first instruction of the give-back, after the slot's heap pointer is cleared) becomes b +0x16d162c, where the slot's other
+//   fields are cleared and the loop goes on: the destructor still runs, the block stays (0x70 bytes per heap per area change), and a late free still finds
+//   the heap's vtable and upstream and forwards to it. The word is checked first
+static int arc_heap_keep(module_t *m, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_ARC_HEAP_KEEP"); if (e && !strcmp(e, "0")) return 0;
+    const uint64_t site = 0x16d15c0; const uint32_t orig = 0xf9400328u, jump = 0x1400001bu;   // ldr x8, [x25] → b +0x16d162c
+    static const struct { uint64_t off; uint32_t w; } C[] = { { 0x16d15b8, 0xa941eb19u }, { 0x16d15bc, 0xf9000b1fu }, { 0x16d1628, 0xd63f0100u }, { 0x16d162c, 0xa9027f1fu } };
+    uint32_t w; int ok = site + 4 <= m->text_end;
+    if (ok) { memcpy(&w, m->base + site, 4); ok = w == orig && !overlaps_rewrite(m, site, 4, p0, p1); }
+    for (unsigned i = 0; ok && i < sizeof C / sizeof *C; i++) { memcpy(&w, m->base + C[i].off, 4); ok = w == C[i].w; }
+    if (!ok) { LOG("[RED] %s: field heaps kept (crash leaving Jubilife) not applied: the heap table's teardown differs at +%#llx", m->name, (unsigned long long)site); return 0; }
+    memcpy(m->base + site, &jump, 4); mod_page_note(m, site, 4);
+    LOG("%s: field heaps kept after their area ends (crash leaving Jubilife, main+0x2b94314): the 0x70-byte heap blocks at +%#llx are not given back, DM_ARC_HEAP_KEEP=0 turns this off", m->name, (unsigned long long)site);
+    return 1;
+}
 // 3D render scale for Legends: Arceus 1.1.1 (DM_RES_CAP 0.5 - 1, the menu's slider; live). The game keeps its 3D buffer's scale in two registry properties,
 //   3DBufferWidthScale / 3DBufferHeightScale (keys 0x4aa9ba3dccea94ea / 0x66e7a756352d0d9f), which its own resolution controller sets (levels 1.0 x 1.0, 0.9 x 0.85,
 //   0.85 x 0.8, 0.8 x 0.7; main+0xcc3600) along with reset and restore paths. Four places read them back (vtable +0x38 of the registry, 8 reads): the one that resizes
@@ -1065,7 +1093,7 @@ static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, in
     if (strcmp(m->name, "main")) return 0;
     int n = bmod_apply(m, lim, p0, p1);
     if (pfps_build(m->build_id)) return n + paldea_fps_patch(m, lim, p0, p1);   // (Scarlet / Violet 4.0.0: none of the Sword / Shield patches below are its)
-    if (!strncasecmp(m->build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) return n + arc_wide(m, lim, p0, p1) + arc_res(m, p0, p1) + arc_wide_render(m, p0, p1) + arc_pool_retry(m, lim, p0, p1) + arc_scale(m, lim, p0, p1);   // (Legends: Arceus 1.1.1: its 60 is hle_nvn.c arc_step, not the Sword / Shield patch)
+    if (!strncasecmp(m->build_id, "aee8f150dda1b5a838806e1a5ea6827a", 32)) return n + arc_wide(m, lim, p0, p1) + arc_res(m, p0, p1) + arc_wide_render(m, p0, p1) + arc_pool_retry(m, lim, p0, p1) + arc_heap_keep(m, p0, p1) + arc_scale(m, lim, p0, p1);   // (Legends: Arceus 1.1.1: its 60 is hle_nvn.c arc_step, not the Sword / Shield patch)
     n += wide_patch(m, lim, p0, p1);
     n += galar_shadow_patch(m, p0, p1) + galar_draw_patch(m, p0, p1) + galar_step_pin(m, p0, p1);
     n += galar_pool_dump(m, p0, p1);
