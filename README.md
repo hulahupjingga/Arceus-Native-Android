@@ -22,13 +22,6 @@
 - Official releases are signed with `SHA-256: a5f49b44b6181758d82504f3beb0851c92093f454c792b49688728130673a070`. Any other build says "Unofficial build". An official update installs over the last one and keeps your setup and saves.
 - **Updates:** ☰ → About → Updates checks this repository's releases for a newer full release (never a pre-release) and installs it after you confirm. It only installs the official build signed with the key above. Turn off **Look for updates when the app starts** to stop the check.
 
-### Your game files
-
-- On your own console or PC, dump the game's **ExeFS** and **RomFS** with **update 1.3.2 applied** (the update merged into the base game). Dump tools and emulators that have "dump ExeFS / RomFS" make a folder holding `exefs` and `romfs`: choose that folder once. Copy it to the phone's storage first.
-- The ExeFS folder holds `main`, `main.npdm`, `rtld`, `sdk` and `subsdk*`. Setup reads its version from `main`: without the update you'll be told to dump again with 1.3.2.
-- **DLC:** dump each DLC's RomFS too. Its folder name must carry the DLC's title ID (Sword `0100ABF008969001` / `…9002`, Shield `01008DB008C2D001` / `…D002`) or its number (`1`, `2`) so setup knows which DLC it is.
-- No keys and no `.nsp` / `.xci`: the app doesn't use them any more, and deletes keys an older version stored. Setup needs room for a copy of the files; if there isn't any, it offers to move them into the app instead.
-
 ## Requirements
 
 - Android 12+, arm64, Vulkan 1.0 or later.
