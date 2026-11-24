@@ -212,6 +212,16 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         if (a < 0x100000000ull || (a & 7) || vm_read_overwrite(mach_task_self(), (vm_address_t)a, sizeof w, (vm_address_t)w, &got) != KERN_SUCCESS || got != sizeof w) continue;
         fprintf(stderr, "[dm] *x%d:", i);
         for (int k = 0; k < 6; k++) off("", w[k]);
+        // a word that points at a printable NUL-terminated string (4+ characters) also prints it as "text": an allocator's name pointer names its heap
+        //   (Arceus crash main+0x2b94314: *x0[2] is the gfl heap's name). Read without faulting, at most 47 bytes, never past the 4 KB page when the
+        //   page after it is not readable; no allocation
+        for (int k = 0; k < 6; k++) {
+            if (w[k] < 0x100000000ull) continue;   // (a module's own read-only strings count too)
+            char s[48]; size_t n = sizeof s - 1, pg = 0x1000 - (size_t)(w[k] & 0xfff);
+            if (!rd_safe(w[k], s, n)) { if (pg >= n || !rd_safe(w[k], s, pg)) continue; n = pg; }
+            size_t L = 0; while (L < n && s[L] >= 0x20 && s[L] < 0x7f && s[L] != '"') L++;
+            if (L >= 4 && L < n && !s[L]) fprintf(stderr, " [%d]\"%.*s\"", k, (int)L, s);
+        }
         fputc('\n', stderr);
         // one level further: a word that points at an object whose first word is in a module (its vtable). The heap a game loader allocates from sits at
         //   [loader + 8] (Dynamax crash #211: alloc(size, 16) at main+0x5dd7b8 came back null): its vtable tells which allocator ran dry
