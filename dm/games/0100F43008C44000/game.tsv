@@ -61,3 +61,4 @@ nvn_ssbo_bases	vs=0x110 ps=0x510 cs=0x310
 
 port	arceus
 engine_quirks	qc11_no_eds gpu_time_auto_only frame_hold_off async_pso_off framegen_game_rate nvn_async_never driver_selftests
+xlate_chain	pre-fmz
